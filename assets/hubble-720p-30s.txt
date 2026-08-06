@@ -1,0 +1,9 @@
+Source: NASA Scientific Visualization Studio, “How Hubble Images Are Made”
+Source page: https://svs.gsfc.nasa.gov/14250
+Original: 1920x1080 VP8/Opus WebM, public domain NASA material
+Downloaded file: hubble-1080p.webm
+Downloaded SHA-256: 3e462f5612598d7d6c84e32015a952130d19db9a5e61aba3aaf6dece254b20dc
+Conversion: first 30 seconds, 1280x360 terminal cells / 1280x720 effective pixels, 24 FPS
+The initial 30-second TTV conversion was interrupted before its header was
+finalized; use the validated 10-second output documented in
+hubble-720p-10s.txt instead.

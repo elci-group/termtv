@@ -1,0 +1,12 @@
+/target/
+/.kaptaind/
+/.fract/
+
+# Large downloaded/generated media; reproduce with the commands in README.md.
+/assets/hubble-1080p.webm
+/assets/hubble-1080p-10s.webm
+/assets/hubble-1080p-30s.webm
+/assets/hubble-720p-10s.ttv
+/assets/hubble-720p-10s.wav
+/assets/hubble-720p-30s.wav
+/assets/hubble-720p-30s.incomplete.ttv

@@ -1,0 +1,14 @@
+[package]
+name = "termtv"
+version = "0.1.0"
+edition = "2021"
+description = "A tiny fixed-timestep terminal renderer with block graphics and dirty-cell diffing"
+license = "MIT"
+
+[lib]
+name = "termtv"
+path = "src/lib.rs"
+
+[[bin]]
+name = "termtv"
+path = "src/main.rs"
