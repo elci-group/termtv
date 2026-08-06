@@ -47,6 +47,44 @@ Native `.ttv` playback is already decoded, so GPU acceleration cannot improve
 its ANSI encoding or terminal transport. Kitty/Sixel output is the next step
 for GPU-backed presentation at 2K/4K resolutions.
 
+## Camera and OBS
+
+Capture a Linux V4L2 webcam directly in the terminal. `live` is the default
+player behavior; `snapshot` captures one frame and exits. The default capture
+is 1280×720 and the default terminal output is 120×34 cells:
+
+```sh
+termtv camera on --device /dev/video0
+termtv camera on --device /dev/video0 --width 160 --height 45 --fps 30
+termtv camera on --device /dev/video0 --behavior snapshot --no-color
+termtv camera off
+```
+
+OBS support uses OBS Studio’s Virtual Camera, which appears as a V4L2 device:
+
+```sh
+# Enable “Start Virtual Camera” in OBS, then identify its /dev/videoN device.
+termtv camera on --obs --device /dev/video2 --width 120 --height 34 --fps 30
+```
+
+Camera flags:
+
+```text
+--device PATH              V4L2 or OBS Virtual Camera device
+--obs                      document/use OBS Virtual Camera mode; --device is required
+--capture-width N          camera input width (default 1280)
+--capture-height N         camera input height (default 720)
+--width N --height N       terminal-cell output geometry
+--fps N                    capture/playback rate
+--behavior live|snapshot   continuous feed or one frame
+--no-color                 monochrome half-block output
+--hwaccel auto|BACKEND     FFmpeg acceleration policy; auto is the default
+```
+
+Camera capture requires FFmpeg with the V4L2 input device. Audio is not
+captured from the camera path yet; use an audio sidecar/source playback when
+microphone audio is needed.
+
 ## Native TTV1 video
 
 Conversion uses the hardware-accelerated default and writes a `.ttv` video plus

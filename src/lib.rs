@@ -165,6 +165,35 @@ pub fn available_accelerations() -> io::Result<Vec<String>> {
         .collect())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CameraBehavior {
+    Live,
+    Snapshot,
+}
+
+impl CameraBehavior {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "live" | "loop" => Some(Self::Live),
+            "snapshot" | "once" => Some(Self::Snapshot),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CameraConfig {
+    pub device: PathBuf,
+    pub capture_width: usize,
+    pub capture_height: usize,
+    pub width: usize,
+    pub height: usize,
+    pub fps: f32,
+    pub color: bool,
+    pub behavior: CameraBehavior,
+    pub acceleration: Acceleration,
+}
+
 const VIDEO_MAGIC: &[u8; 4] = b"TTV1";
 
 /// A native, terminal-sized video: each frame stores two RGB colors per cell.
@@ -411,6 +440,63 @@ impl Video {
         Ok(())
     }
 
+    /// Captures a V4L2 webcam or OBS Virtual Camera and renders it live.
+    pub fn play_camera(config: &CameraConfig) -> io::Result<()> {
+        if config.capture_width == 0
+            || config.capture_height == 0
+            || config.width == 0
+            || config.height == 0
+            || !config.fps.is_finite()
+            || config.fps <= 0.0
+        {
+            return Err(invalid("invalid camera dimensions or FPS"));
+        }
+        let filter = format!(
+            "scale={}:{}:flags=bilinear",
+            config.width,
+            config.height * 2
+        );
+        let mut command = Command::new("ffmpeg");
+        command.args(["-v", "error"]);
+        if let Some(hwaccel) = config.acceleration.ffmpeg_name() {
+            command.args(["-hwaccel", hwaccel]);
+        }
+        let mut capture = command
+            .args(["-f", "v4l2", "-framerate"])
+            .arg(config.fps.to_string())
+            .args(["-video_size"])
+            .arg(format!(
+                "{}x{}",
+                config.capture_width, config.capture_height
+            ))
+            .args(["-i"])
+            .arg(&config.device)
+            .args([
+                "-vf", &filter, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let mut raw = capture
+            .stdout
+            .take()
+            .ok_or_else(|| invalid("FFmpeg did not provide camera output"))?;
+        let pid_path = Path::new("/tmp/termtv-camera.pid");
+        std::fs::write(pid_path, std::process::id().to_string())?;
+        let result = render_raw_stream(
+            &mut raw,
+            config.width,
+            config.height,
+            config.fps,
+            config.color,
+            config.behavior,
+        );
+        let _ = capture.kill();
+        let _ = capture.wait();
+        let _ = std::fs::remove_file(pid_path);
+        result
+    }
+
     pub fn play(&self, color: bool) -> io::Result<()> {
         let mut audio = self
             .audio
@@ -470,6 +556,64 @@ fn read_frame(raw: &mut impl Read, frame: &mut [u8]) -> io::Result<bool> {
         filled += n;
     }
     Ok(true)
+}
+
+fn render_raw_stream(
+    raw: &mut impl Read,
+    width: usize,
+    height: usize,
+    fps: f32,
+    color: bool,
+    behavior: CameraBehavior,
+) -> io::Result<()> {
+    let mut current = Framebuffer::new(width, height);
+    let mut previous = current.clone();
+    let frame_size = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(6))
+        .ok_or_else(|| invalid("camera frame dimensions overflow"))?;
+    let mut bytes = vec![0; frame_size];
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    let frame_time = Duration::from_secs_f32(1.0 / fps);
+    let mut next = Instant::now();
+    let mut number = 0_u64;
+    write!(stdout, "\x1b[2J\x1b[?25l")?;
+    loop {
+        if !read_frame(raw, &mut bytes)? {
+            break;
+        }
+        let now = Instant::now();
+        if now < next {
+            std::thread::sleep(next - now);
+        }
+        for y in 0..height {
+            for x in 0..width {
+                let source = (y * width + x) * 6;
+                current.cells[y * width + x] = Cell {
+                    top: Rgb(bytes[source], bytes[source + 1], bytes[source + 2]),
+                    bottom: Rgb(bytes[source + 3], bytes[source + 4], bytes[source + 5]),
+                };
+            }
+        }
+        let diff = current.diff_ansi(&previous, color);
+        write!(
+            stdout,
+            "{}\x1b[{};1H\x1b[0mCamera | {:.1} FPS | frame {}",
+            diff,
+            height + 1,
+            fps,
+            number + 1
+        )?;
+        stdout.flush()?;
+        std::mem::swap(&mut current, &mut previous);
+        number += 1;
+        next += frame_time;
+        if behavior == CameraBehavior::Snapshot {
+            break;
+        }
+    }
+    writeln!(stdout, "\x1b[0m\x1b[?25h")?;
+    stdout.flush()
 }
 
 fn invalid(message: &str) -> io::Error {
