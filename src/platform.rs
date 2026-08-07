@@ -1,6 +1,6 @@
 //! Platform-specific process lifetime and signaling helpers.
 
-use std::process::Command;
+use std::{io, path::PathBuf, process::Command};
 
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
@@ -42,3 +42,52 @@ pub(crate) fn configure_child_lifetime(command: &mut Command) {
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn configure_child_lifetime(_command: &mut Command) {}
+
+/// Return the PID-specific camera stop file path.
+pub(crate) fn camera_stop_path(pid: u32) -> PathBuf {
+    PathBuf::from(format!("/tmp/termtv-camera.{pid}.stop"))
+}
+
+/// Check whether a stop signal exists for the given camera process.
+pub(crate) fn camera_stop_requested(pid: u32) -> bool {
+    camera_stop_path(pid).is_file()
+}
+
+/// Remove the stop signal for the given camera process, ignoring missing file.
+pub(crate) fn clear_camera_stop(pid: u32) {
+    let _ = std::fs::remove_file(camera_stop_path(pid));
+}
+
+/// Request stop for all running termtv camera sessions.
+pub fn request_camera_stop_all() -> io::Result<()> {
+    for entry in std::fs::read_dir("/tmp")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("termtv-camera.") && name.ends_with(".stop") {
+            std::fs::write(entry.path(), "stop")?;
+        }
+    }
+    Ok(())
+}
+
+/// List candidate V4L2 camera devices.
+#[cfg(target_os = "linux")]
+pub fn available_camera_devices() -> io::Result<Vec<PathBuf>> {
+    let mut devices = Vec::new();
+    for entry in std::fs::read_dir("/dev")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("video") {
+            devices.push(entry.path());
+        }
+    }
+    devices.sort();
+    Ok(devices)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn available_camera_devices() -> io::Result<Vec<PathBuf>> {
+    Ok(Vec::new())
+}

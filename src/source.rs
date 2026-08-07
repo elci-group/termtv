@@ -13,13 +13,26 @@ use crate::{
     controls::TerminalControls,
     error::TermtvError,
     framebuffer::Framebuffer,
-    platform::{configure_child_lifetime, signal_child},
+    platform::{camera_stop_requested, clear_camera_stop, configure_child_lifetime, signal_child},
     render::{
         apply_ambience, copy_rgb24_to_frame, finish_stderr_reader, read_frame, spawn_stderr_reader,
     },
 };
 
 /// Validate dimensions and play a source video file or stream through FFmpeg.
+/// Verify that FFmpeg and FFplay are available in PATH.
+pub(crate) fn check_ffmpeg_tools() -> Result<(), TermtvError> {
+    for name in ["ffmpeg", "ffplay"] {
+        if Command::new(name).arg("-version").output().is_err() {
+            return Err(TermtvError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{name} is not installed or not in PATH"),
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn play_source(
     input: impl AsRef<Path>,
     width: usize,
@@ -30,7 +43,11 @@ pub(crate) fn play_source(
     ambience: Ambience,
 ) -> Result<(), TermtvError> {
     let input_path = input.as_ref();
-    if width == 0 || height == 0 {
+    if width == 0
+        || height == 0
+        || width > crate::constants::MAX_DIMENSION
+        || height > crate::constants::MAX_DIMENSION
+    {
         eprintln!(
             "termtv_event=source_playback operation=validate_options error=invalid_dimensions"
         );
@@ -47,6 +64,7 @@ pub(crate) fn play_source(
         );
         return Err(TermtvError::InputNotFound(input_path.to_path_buf()));
     }
+    check_ffmpeg_tools()?;
     let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
     eprintln!(
         "termtv_event=source_playback operation=start input={} width={} height={} fps={} acceleration={acceleration:?}",
@@ -247,6 +265,10 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
         || config.capture_height == 0
         || config.width == 0
         || config.height == 0
+        || config.capture_width > crate::constants::MAX_DIMENSION
+        || config.capture_height > crate::constants::MAX_DIMENSION
+        || config.width > crate::constants::MAX_DIMENSION
+        || config.height > crate::constants::MAX_DIMENSION
     {
         eprintln!("termtv_event=camera operation=validate_options error=invalid_dimensions");
         return Err(TermtvError::InvalidDimensions);
@@ -255,6 +277,21 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
         eprintln!("termtv_event=camera operation=validate_options error=invalid_fps");
         return Err(TermtvError::InvalidFps);
     }
+    #[cfg(target_os = "linux")]
+    if !config.device.exists() {
+        eprintln!(
+            "termtv_event=camera operation=validate_device error=device_not_found path={}",
+            config.device.display()
+        );
+        return Err(TermtvError::DeviceError {
+            path: config.device.clone(),
+            source: io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("camera device not found: {}", config.device.display()),
+            ),
+        });
+    }
+    check_ffmpeg_tools()?;
     let filter = format!(
         "scale={}:{}:flags=bilinear",
         config.width,
@@ -288,12 +325,8 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
             "FFmpeg did not provide camera output",
         ))
     })?;
-    let stop_path = Path::new("/tmp/termtv-camera.stop");
-    if let Err(error) = std::fs::remove_file(stop_path) {
-        if error.kind() != io::ErrorKind::NotFound {
-            eprintln!("termtv_event=camera operation=clear_stop_signal error={error}");
-        }
-    }
+    let camera_pid = std::process::id();
+    clear_camera_stop(camera_pid);
     render_raw_stream(
         &mut raw,
         config.width,
@@ -301,6 +334,7 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
         config.fps,
         config.color,
         config.behavior,
+        camera_pid,
     )?;
     if let Err(error) = capture.kill() {
         eprintln!("termtv_event=camera operation=stop_ffmpeg error={error}");
@@ -308,11 +342,7 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
     if let Err(error) = capture.wait() {
         eprintln!("termtv_event=camera operation=wait_ffmpeg error={error}");
     }
-    if let Err(error) = std::fs::remove_file(stop_path) {
-        if error.kind() != io::ErrorKind::NotFound {
-            eprintln!("termtv_event=camera operation=clear_stop_signal error={error}");
-        }
-    }
+    clear_camera_stop(camera_pid);
     Ok(())
 }
 
@@ -324,6 +354,7 @@ pub(crate) fn render_raw_stream(
     fps: f32,
     color: bool,
     behavior: CameraBehavior,
+    pid: u32,
 ) -> io::Result<()> {
     let mut current = Framebuffer::new(width, height);
     let mut previous = current.clone();
@@ -338,8 +369,8 @@ pub(crate) fn render_raw_stream(
     let mut number = 0_u64;
     write!(stdout, "\x1b[2J\x1b[?25l")?;
     loop {
-        if std::path::Path::new("/tmp/termtv-camera.stop").is_file() {
-            eprintln!("termtv_event=camera operation=stop_signal_received");
+        if camera_stop_requested(pid) {
+            eprintln!("termtv_event=camera operation=stop_signal_received pid={pid}");
             break;
         }
         if !read_frame(raw, &mut bytes)? {

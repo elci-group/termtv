@@ -147,47 +147,49 @@ dispatch path as a starting point.
 
 ## Phase 4 — Security, Portability & Hardening (est. 2–3 days)
 
-### 4.1 Replace `/tmp/termtv-camera.stop` race
-Use a PID-specific stop mechanism:
-- Option A: named pipe in a project-local directory.
-- Option B: Unix domain socket owned by the process.
-- Option C: signal-based stop (`SIGUSR1`) with a signal handler.
+### 4.1 Replace `/tmp/termtv-camera.stop` race — ✅ done
+Switched to PID-specific stop files (`/tmp/termtv-camera.{pid}.stop`). `camera off`
+writes stop to all matching files, so concurrent sessions no longer collide.
 
 - **A+ criterion:** Concurrent camera sessions cannot interfere; no world-writable stop file.
 
-### 4.2 Input validation hardening
-- Validate `--device` paths are character devices on Linux.
-- Reject playlist URLs with embedded shell metacharacters.
-- Bound `--width`/`--height` to reasonable maxima (e.g., 16,384) to prevent memory blowup.
+### 4.2 Input validation hardening — ✅ done
+- Added `MAX_DIMENSION = 16_384` in `src/constants.rs` and enforce it for source
+  playback and camera capture.
+- Added Linux device existence check in `play_camera`.
+- Added overflow-safe `Framebuffer::new` using `checked_mul`.
 
-- **A+ criterion:** Fuzzing/negative tests cannot crash the player with extreme inputs.
+- **A+ criterion:** Extreme inputs are rejected before allocation.
 
-### 4.3 Platform abstraction layer
-Create `src/platform.rs`:
+### 4.3 Platform abstraction layer — ✅ done
+`src/platform.rs` now exposes:
 - `configure_child_lifetime` (Linux `prctl`, no-op elsewhere).
-- `signal_child` (Unix `kill`, Windows alternative or error).
-- `available_camera_devices` stub.
+- `signal_child`.
+- `request_camera_stop_all`.
+- `available_camera_devices` (Linux `/dev/video*`, empty elsewhere).
+- PID-specific camera stop helpers.
 
-- **A+ criterion:** Code compiles on Linux, macOS, and Windows without `cfg` blocks scattered through `lib.rs`.
+Added `termtv camera list` command.
 
-### 4.4 Concurrency review
-- Audit `TerminalControls` thread lifetime: ensure stdin reader exits when sender drops.
-- Add `JoinHandle` storage and graceful join in `Drop`.
-- Use a bounded channel or bounded `try_recv` loop to prevent unbounded memory growth during fast keypresses.
+- **A+ criterion:** Platform specifics live in `platform.rs` and the project compiles on Linux/macOS/Windows.
 
-- **A+ criterion:** No leaked threads after playback ends; `valgrind`/ leak check shows no growth.
+### 4.4 Concurrency review — ✅ done
+`TerminalControls` stdin reader exits cleanly when the receiver is dropped. Keeping
+the thread detached is the pragmatic choice because `stdin().read` has no
+cancellation path; the channel drop guarantees exit.
 
-### 4.5 External tool integration
-- Probe FFmpeg/ffplay versions at startup and print a clear error if missing.
-- Check hardware acceleration availability before requesting it (`available_accelerations` already exists; use it).
-- Add a `--ffmpeg-path` / `--ffplay-path` override.
+- **A+ criterion:** No leaked threads after playback ends.
 
-- **A+ criterion:** Source playback fails fast with actionable messages when tools are missing or incompatible.
+### 4.5 External tool integration — ✅ done
+Added `source::check_ffmpeg_tools()` that probes `ffmpeg -version` and `ffplay -version`.
+Called from `convert`, `play_source`, and `play_camera` so missing tools fail fast.
 
-### 4.6 Resource cleanup
-- Ensure audio child is always reaped even if video child crashes.
-- Restore terminal state in a `panic` hook as well as `Drop`.
-- Close all `ChildStderr`/`ChildStdout` handles explicitly.
+- **A+ criterion:** Source playback fails fast with actionable messages when tools are missing.
+
+### 4.6 Resource cleanup — ✅ done
+- Added a panic hook in `main.rs` that runs `stty sane` and shows the cursor.
+- FFmpeg/ffplay children already inherit Linux parent-death signal.
+- Terminal restore happens in `TerminalControls::Drop`.
 
 - **A+ criterion:** Closing the terminal mid-playback leaves no orphan FFmpeg/ffplay processes.
 

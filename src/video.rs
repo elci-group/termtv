@@ -16,7 +16,7 @@ use crate::{
     framebuffer::Framebuffer,
     platform::configure_child_lifetime,
     render::{finish_stderr_reader, report_conversion_progress, spawn_stderr_reader},
-    source::{play_camera, play_source},
+    source::{check_ffmpeg_tools, play_camera, play_source},
 };
 
 const VIDEO_MAGIC: &[u8; 4] = b"TTV1";
@@ -100,6 +100,7 @@ impl Video {
             eprintln!("termtv_event=video_convert operation=validate_options error=invalid_fps");
             return Err(TermtvError::InvalidFps);
         }
+        check_ffmpeg_tools()?;
         let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
         let mut command = Command::new("ffmpeg");
         configure_child_lifetime(&mut command);

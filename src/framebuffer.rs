@@ -19,10 +19,13 @@ impl Framebuffer {
             width > 0 && height > 0,
             "framebuffer dimensions must be non-zero"
         );
+        let cells = width
+            .checked_mul(height)
+            .expect("framebuffer dimensions overflow");
         Self {
             width,
             height,
-            cells: vec![Cell::default(); width * height],
+            cells: vec![Cell::default(); cells],
         }
     }
 

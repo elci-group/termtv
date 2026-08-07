@@ -13,14 +13,15 @@ pub mod accel;
 pub mod capture;
 pub mod color;
 pub mod framebuffer;
+pub mod platform;
 pub mod scene;
 pub mod source;
 pub mod video;
 
+mod constants;
 mod controls;
 mod diagnostics;
 mod error;
-mod platform;
 mod render;
 
 pub use accel::{available_accelerations, Acceleration};

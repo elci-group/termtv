@@ -6,6 +6,7 @@
 use std::{
     env, fs,
     io::{self, Write},
+    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -15,6 +16,11 @@ use termtv::{
 };
 
 fn main() -> io::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        let _ = Command::new("stty").arg("sane").status();
+        let _ = std::io::stdout().write_all(b"\x1b[?25h");
+        eprintln!("termtv_event=panic message={info}");
+    }));
     let args: Vec<String> = env::args().collect();
     if matches!(
         args.get(1).map(String::as_str),
@@ -52,6 +58,7 @@ fn print_help() {
            termtv playlist play <file.m3u> [playback options]\n\
            termtv camera on [--device /dev/video0 | --obs] [--width N --height N --capture-width N --capture-height N --fps N]\n\
            termtv camera off\n\
+           termtv camera list\n\
            termtv accel-info\n\n\
          Hardware acceleration defaults to --hwaccel auto for convert, play-source, and camera.\n\
          Backends include vaapi, qsv, cuda, vdpau, drm, opencl, and vulkan.\n\
@@ -204,11 +211,17 @@ fn accel_info() -> io::Result<()> {
 fn camera(args: &[String]) -> io::Result<()> {
     match args.get(2).map(String::as_str) {
         Some("off") => {
-            if let Err(error) = fs::write("/tmp/termtv-camera.stop", "stop") {
+            if let Err(error) = termtv::platform::request_camera_stop_all() {
                 eprintln!("termtv_event=camera operation=request_stop error={error}");
                 return Err(io::Error::other("could not request camera stop"));
             }
             println!("camera stop requested");
+            Ok(())
+        }
+        Some("list") => {
+            for device in termtv::platform::available_camera_devices()? {
+                println!("{}", device.display());
+            }
             Ok(())
         }
         Some("on") => {
