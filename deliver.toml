@@ -104,6 +104,22 @@ path = "tests/ttv1_round_trip.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
 
+[[file]]
+path = "completions/termtv.bash"
+required = true
+
+[[file]]
+path = "completions/termtv.zsh"
+required = true
+
+[[file]]
+path = "completions/termtv.fish"
+required = true
+
+[[file]]
+path = "man/termtv.1"
+required = true
+
 [[command]]
 name = "cargo fmt --check"
 cmd = ["cargo", "fmt", "--check"]

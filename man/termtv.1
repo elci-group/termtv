@@ -1,0 +1,78 @@
+.TH TERMTV 1 "2026-08-07" "termtv" "User Commands"
+.SH NAME
+termtv \- hardware-aware terminal video renderer
+.SH SYNOPSIS
+.B termtv
+[\fICOMMAND\fR] [\fIOPTIONS\fR]
+.SH DESCRIPTION
+termtv renders video in a terminal using ANSI half-block characters.
+It supports a native \fB.ttv1\fR format and can stream source video or
+camera capture through FFmpeg.
+.SH COMMANDS
+.TP
+.B convert \fIinput\fR \fIoutput.ttv\fR
+Convert any FFmpeg-readable input to the native \fB.ttv1\fR format.
+.TP
+.B play \fIfile.ttv\fR
+Play a native \fB.ttv1\fR file.
+.TP
+.B play-source \fIinput\fR
+Stream any FFmpeg-readable source directly to the terminal.
+.TP
+.B playlist list|play \fIfile.m3u\fR
+List or play entries from an M3U playlist.
+.TP
+.B camera on|off|list
+Stream, stop, or list V4L2 camera devices.
+.TP
+.B accel-info
+List available hardware acceleration backends.
+.TP
+.B help
+Show usage information.
+.TP
+.B completions \fIbash|zsh|fish\fR
+Print a shell completion script for the requested shell.
+.SH OPTIONS
+.TP
+.BR \-\-width " " \fIN\fR
+Output width in terminal cells.
+.TP
+.BR \-\-height " " \fIN\fR
+Output height in terminal cells.
+.TP
+.BR \-\-fps " " \fIN\fR
+Target frames per second.
+.TP
+.BR \-\-hwaccel " " \fIID\fR
+Hardware backend: auto, vaapi, qsv, cuda, vdpau, drm, opencl, vulkan.
+.TP
+.BR \-\-ambience " " \fIID\fR
+Ambience mode: off, pulse, strobe.
+.TP
+.BR \-\-color
+Force ANSI color output.
+.TP
+.BR \-\-no-color
+Disable ANSI color output.
+.TP
+.BR \-\-device " " \fIPATH\fR
+V4L2 device path (camera only).
+.TP
+.BR \-\-capture-width " " \fIN\fR
+Camera capture width.
+.TP
+.BR \-\-capture-height " " \fIN\fR
+Camera capture height.
+.TP
+.BR \-\-behavior " " \fIlive|photo\fR
+Camera behavior.
+.SH FILES
+.TP
+.I ./.termtv.toml
+Local configuration file.
+.TP
+.I ~/.config/termtv/config.toml
+User configuration file.
+.SH SEE ALSO
+.BR ffmpeg (1)

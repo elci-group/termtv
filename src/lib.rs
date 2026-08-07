@@ -19,7 +19,7 @@ pub mod scene;
 pub mod source;
 pub mod video;
 
-mod constants;
+pub mod constants;
 mod controls;
 mod diagnostics;
 mod error;

@@ -15,6 +15,10 @@ use termtv::{
     DemoScene, Framebuffer, Scene, Video,
 };
 
+const BASH_COMPLETION: &str = include_str!("../completions/termtv.bash");
+const ZSH_COMPLETION: &str = include_str!("../completions/termtv.zsh");
+const FISH_COMPLETION: &str = include_str!("../completions/termtv.fish");
+
 fn main() -> io::Result<()> {
     std::panic::set_hook(Box::new(|info| {
         let _ = Command::new("stty").arg("sane").status();
@@ -23,12 +27,8 @@ fn main() -> io::Result<()> {
     }));
     let config = Config::load();
     let args: Vec<String> = env::args().collect();
-    if matches!(
-        args.get(1).map(String::as_str),
-        Some("help" | "--help" | "-h")
-    ) {
-        print_help();
-        return Ok(());
+    if help_requested(&args) {
+        return print_command_help(args.get(1).map(String::as_str));
     }
     match args.get(1).map(String::as_str) {
         Some("convert") => convert(&args, &config),
@@ -37,6 +37,7 @@ fn main() -> io::Result<()> {
         Some("playlist") => playlist(&args, &config),
         Some("accel-info") => accel_info(),
         Some("camera") => camera(&args, &config),
+        Some("completions") => completions(&args),
         Some(_) => {
             termtv::event!("cli", "dispatch", error = "unknown_command");
             Err(io::Error::new(
@@ -46,6 +47,77 @@ fn main() -> io::Result<()> {
         }
         None => run_demo(&args, &config),
     }
+}
+
+fn help_requested(args: &[String]) -> bool {
+    args.len() == 1
+        || args.iter().any(|arg| arg == "--help" || arg == "-h")
+        || matches!(args.get(1).map(String::as_str), Some("help"))
+}
+
+fn print_command_help(command: Option<&str>) -> io::Result<()> {
+    match command {
+        Some("convert") => println!(
+            "termtv convert <input> <output.ttv> [options]\n\n\
+             Convert any FFmpeg-readable input to the .ttv1 native format.\n\n\
+             Options:\n\
+               --width N     Output width in terminal cells (default: 120)\n\
+               --height N    Output height in terminal cells (default: 34)\n\
+               --fps N       Target frames per second (default: 24)\n\
+               --hwaccel ID  Hardware backend: auto, vaapi, qsv, cuda, vdpau, drm, opencl, vulkan"
+        ),
+        Some("play") => println!(
+            "termtv play <file.ttv> [options]\n\n\
+             Play a native .ttv1 file.\n\n\
+             Options:\n\
+               --no-color  Disable ANSI color\n\
+               --color     Force ANSI color on"
+        ),
+        Some("play-source") => println!(
+            "termtv play-source <input> [options]\n\n\
+             Stream any FFmpeg-readable source directly to the terminal.\n\n\
+             Options:\n\
+               --width N     Output width in terminal cells (default: 120)\n\
+               --height N    Output height in terminal cells (default: 34)\n\
+               --fps N       Target frames per second (default: 24)\n\
+               --hwaccel ID  Hardware backend: auto, vaapi, qsv, cuda, vdpau, drm, opencl, vulkan\n\
+               --ambience ID Ambience mode: off, pulse, strobe"
+        ),
+        Some("playlist") => println!(
+            "termtv playlist list <file.m3u>\n\
+             termtv playlist play <file.m3u> [playback options]\n\n\
+             List or play entries from an M3U playlist.\n\
+             Local paths are resolved relative to the playlist file."
+        ),
+        Some("camera") => println!(
+            "termtv camera on [options]\n\
+             termtv camera off\n\
+             termtv camera list\n\n\
+             Stream a V4L2 camera or OBS Virtual Camera.\n\n\
+             Options:\n\
+               --device /dev/videoN  V4L2 device (default: /dev/video0)\n\
+               --obs                 Alias for --device /dev/videoN on OBS Virtual Camera\n\
+               --capture-width N     Camera capture width (default: 1280)\n\
+               --capture-height N    Camera capture height (default: 720)\n\
+               --width N             Output width in terminal cells (default: 120)\n\
+               --height N            Output height in terminal cells (default: 34)\n\
+               --fps N               Target frames per second (default: 30)\n\
+               --behavior live|photo Camera behavior (default: live)\n\
+               --hwaccel ID          Hardware backend: auto, vaapi, qsv, cuda, ..."
+        ),
+        Some("accel-info") => println!(
+            "termtv accel-info\n\n\
+             List hardware acceleration backends available on this system."
+        ),
+        Some("completions") => println!(
+            "termtv completions bash|zsh|fish\n\n\
+             Print a shell completion script for the requested shell.\n\
+             Redirect output to your shell's completion directory."
+        ),
+        Some("help") => print_help(),
+        _ => print_help(),
+    }
+    Ok(())
 }
 
 fn print_help() {
@@ -60,7 +132,9 @@ fn print_help() {
            termtv camera on [--device /dev/video0 | --obs] [--width N --height N --capture-width N --capture-height N --fps N]\n\
            termtv camera off\n\
            termtv camera list\n\
-           termtv accel-info\n\n\
+           termtv accel-info\n\
+           termtv completions bash|zsh|fish\n\n\
+         Run `termtv <command> --help` for per-command details.\n\n\
          Hardware acceleration defaults to --hwaccel auto for convert, play-source, and camera.\n\
          Backends include vaapi, qsv, cuda, vdpau, drm, opencl, and vulkan.\n\
          Playback keys: p/space pause, a toggle ambience, q quit.\n\
@@ -76,9 +150,11 @@ fn require_arg<'a>(args: &'a [String], index: usize, usage: &str) -> io::Result<
 }
 
 fn parse_dimensions(args: &[String], config: &Config) -> (usize, usize, f32) {
-    let width = value(args, "--width", config.width.unwrap_or(120_usize));
-    let height = value(args, "--height", config.height.unwrap_or(34_usize));
-    let fps = value(args, "--fps", config.fps.unwrap_or(24.0_f32));
+    let width = value(args, "--width", config.width.unwrap_or(120_usize))
+        .clamp(1, termtv::constants::MAX_DIMENSION);
+    let height = value(args, "--height", config.height.unwrap_or(34_usize))
+        .clamp(1, termtv::constants::MAX_DIMENSION);
+    let fps = value(args, "--fps", config.fps.unwrap_or(24.0_f32)).clamp(1.0, 240.0);
     (width, height, fps)
 }
 
@@ -221,6 +297,29 @@ fn accel_info() -> io::Result<()> {
     for acceleration in available_accelerations()? {
         println!("{acceleration}");
     }
+    Ok(())
+}
+
+fn completions(args: &[String]) -> io::Result<()> {
+    let shell = require_arg(args, 2, "usage: termtv completions bash|zsh|fish")?;
+    let script = match shell.as_str() {
+        "bash" => BASH_COMPLETION,
+        "zsh" => ZSH_COMPLETION,
+        "fish" => FISH_COMPLETION,
+        _ => {
+            termtv::event!(
+                "cli",
+                "completions",
+                error = "unsupported_shell",
+                shell = shell
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "supported shells: bash, zsh, fish",
+            ));
+        }
+    };
+    print!("{script}");
     Ok(())
 }
 
