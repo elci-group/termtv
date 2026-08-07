@@ -30,6 +30,27 @@ termtv accel-info
 termtv play-source input.webm --hwaccel auto --width 120 --height 34 --fps 24
 ```
 
+Conversion displays live frame/elapsed progress and reports the audio
+extraction phase. Source playback displays `BUFFERING` before the first frame,
+then includes the measured per-frame buffer wait in the status HUD.
+
+Player controls are active when playback has a terminal attached: `p` or
+Space pauses/resumes video and audio together, `a` toggles pulse ambience, and
+`q` quits cleanly. Configure ambience explicitly with `--ambience off|pulse`.
+
+Play local files or authorized/public streams from an M3U playlist. `list`
+prints the resolved entries; `play` presents them sequentially with the same
+source-playback flags:
+
+```sh
+termtv playlist list media.m3u
+termtv playlist play media.m3u --width 120 --height 34 --fps 24 \
+  --ambience pulse --hwaccel auto
+```
+
+Only use streams you are legally authorized to access. termtv does not ship
+or discover IPTV channel lists.
+
 Available explicit backends depend on the local FFmpeg/device setup:
 
 ```sh
@@ -42,6 +63,12 @@ termtv play-source input.webm --hwaccel vulkan
 
 The source path streams frames and avoids loading an entire video into RAM.
 Audio is played by FFplay. FFmpeg and FFplay are required for source playback.
+Playback validates local inputs before starting, reports decoder and audio
+diagnostics when a child process fails, and terminates a stuck audio child when
+video playback ends. For a failed stream, inspect the `termtv_event=` lines on
+stderr; they identify input validation, FFmpeg startup/decoder, FFplay audio,
+and process-reaping stages. On Linux, FFmpeg and FFplay also inherit a
+parent-death guard so closing the terminal cannot leave audio playing.
 
 Native `.ttv` playback is already decoded, so GPU acceleration cannot improve
 its ANSI encoding or terminal transport. Kitty/Sixel output is the next step

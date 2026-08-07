@@ -1,6 +1,7 @@
 /target/
 /.kaptaind/
 /.fract/
+/.dreams/
 
 # Large downloaded/generated media; reproduce with the commands in README.md.
 /assets/hubble-1080p.webm

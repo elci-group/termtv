@@ -3,6 +3,10 @@ path = "Cargo.toml"
 required = true
 
 [[file]]
+path = "AGENTS.md"
+required = true
+
+[[file]]
 path = "src/lib.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
@@ -12,9 +16,76 @@ path = "src/main.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
 
+[[file]]
+path = "src/accel.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/capture.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/color.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/controls.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/error.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/framebuffer.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/platform.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/render.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/scene.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/source.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "src/video.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[command]]
+name = "cargo fmt --check"
+cmd = ["cargo", "fmt", "--check"]
+expect_exit = 0
+timeout_secs = 120
+
+[[command]]
+name = "cargo clippy"
+cmd = ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"]
+expect_exit = 0
+timeout_secs = 120
+
 [[command]]
 name = "cargo test"
-cmd = ["cargo", "test"]
+cmd = ["cargo", "test", "--all-targets"]
 expect_exit = 0
 timeout_secs = 120
 stdout_contains = ["test result: ok"]
