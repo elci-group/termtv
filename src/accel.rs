@@ -1,6 +1,6 @@
 //! Hardware acceleration policy for FFmpeg-backed operations.
 
-use std::{io, process::Command};
+use std::process::Command;
 
 /// Hardware acceleration backend requested from FFmpeg.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl Acceleration {
 }
 
 /// Reports the acceleration methods exposed by the installed FFmpeg build.
-pub fn available_accelerations() -> io::Result<Vec<String>> {
+pub fn available_accelerations() -> Result<Vec<String>, crate::error::TermtvError> {
     let output = Command::new("ffmpeg")
         .args(["-hide_banner", "-hwaccels"])
         .output()?;

@@ -18,6 +18,7 @@ pub mod source;
 pub mod video;
 
 mod controls;
+mod diagnostics;
 mod error;
 mod platform;
 mod render;

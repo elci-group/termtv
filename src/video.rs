@@ -12,7 +12,7 @@ use crate::{
     accel::Acceleration,
     capture::{Ambience, CameraConfig},
     color::Cell,
-    error::{invalid, invalid_owned},
+    error::TermtvError,
     framebuffer::Framebuffer,
     platform::configure_child_lifetime,
     render::{finish_stderr_reader, report_conversion_progress, spawn_stderr_reader},
@@ -33,17 +33,15 @@ pub struct Video {
 
 impl Video {
     /// Open a `.ttv1` video file and detect an optional same-name `.wav` audio sidecar.
-    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, TermtvError> {
         let path = path.as_ref();
+        crate::trace!("opening video path={}", path.display());
         let mut file = File::open(path)?;
         let mut magic = [0; 4];
         file.read_exact(&mut magic)?;
         if &magic != VIDEO_MAGIC {
             eprintln!("termtv_event=video_open operation=validate_header error=invalid_magic");
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "not a TTV1 video",
-            ));
+            return Err(TermtvError::InvalidMagic);
         }
         let width = read_u16(&mut file)? as usize;
         let height = read_u16(&mut file)? as usize;
@@ -51,7 +49,7 @@ impl Video {
         let count = read_u64(&mut file)? as usize;
         let cells = width
             .checked_mul(height)
-            .ok_or_else(|| invalid("video dimensions overflow"))?;
+            .ok_or(TermtvError::InvalidDimensions)?;
         let mut frames = Vec::with_capacity(count);
         for _ in 0..count {
             let mut frame = Vec::with_capacity(cells);
@@ -79,7 +77,7 @@ impl Video {
         width: usize,
         height: usize,
         fps: f32,
-    ) -> io::Result<()> {
+    ) -> Result<(), TermtvError> {
         Self::convert_with_acceleration(input, output, width, height, fps, Acceleration::Auto)
     }
 
@@ -91,16 +89,16 @@ impl Video {
         height: usize,
         fps: f32,
         acceleration: Acceleration,
-    ) -> io::Result<()> {
-        if width == 0
-            || height == 0
-            || width > u16::MAX as usize
-            || height > u16::MAX as usize
-            || !fps.is_finite()
-            || fps <= 0.0
-        {
-            eprintln!("termtv_event=video_convert operation=validate_options error=invalid_dimensions_or_fps");
-            return Err(invalid("invalid video dimensions or FPS"));
+    ) -> Result<(), TermtvError> {
+        if width == 0 || height == 0 || width > u16::MAX as usize || height > u16::MAX as usize {
+            eprintln!(
+                "termtv_event=video_convert operation=validate_options error=invalid_dimensions"
+            );
+            return Err(TermtvError::InvalidDimensions);
+        }
+        if !fps.is_finite() || fps <= 0.0 {
+            eprintln!("termtv_event=video_convert operation=validate_options error=invalid_fps");
+            return Err(TermtvError::InvalidFps);
         }
         let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
         let mut command = Command::new("ffmpeg");
@@ -127,10 +125,12 @@ impl Video {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let mut raw = child
-            .stdout
-            .take()
-            .ok_or_else(|| invalid("FFmpeg did not provide video output"))?;
+        let mut raw = child.stdout.take().ok_or_else(|| {
+            TermtvError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FFmpeg did not provide video output",
+            ))
+        })?;
         let progress = child.stderr.take().map(spawn_stderr_reader);
         let mut file = File::create(&output)?;
         file.write_all(VIDEO_MAGIC)?;
@@ -159,7 +159,7 @@ impl Video {
                 eprintln!(
                     "termtv_event=video_convert operation=read_frame error=truncated_ffmpeg_frame"
                 );
-                return Err(invalid("truncated raw frame from FFmpeg"));
+                return Err(TermtvError::TruncatedFrame);
             }
             for y in 0..height {
                 for x in 0..width {
@@ -191,9 +191,10 @@ impl Video {
             eprintln!(
                 "termtv_event=video_convert operation=ffmpeg_video status={status} diagnostics={video_diagnostics}"
             );
-            return Err(invalid_owned(format!(
-                "FFmpeg failed while converting video: {video_diagnostics}"
-            )));
+            return Err(TermtvError::FfmpegFailed {
+                stage: "video_convert",
+                diagnostics: video_diagnostics,
+            });
         }
         let audio_path = output.as_ref().with_extension("wav");
         eprintln!("Extracting audio to {}...", audio_path.display());
@@ -205,7 +206,10 @@ impl Video {
             .status()?;
         if !audio_status.success() {
             eprintln!("termtv_event=video_convert operation=ffmpeg_audio status={audio_status}");
-            return Err(invalid("FFmpeg failed while extracting audio"));
+            return Err(TermtvError::FfmpegFailed {
+                stage: "audio_extract",
+                diagnostics: String::new(),
+            });
         }
         file.seek(SeekFrom::Start(12))?;
         file.write_all(&count.to_le_bytes())?;
@@ -221,17 +225,17 @@ impl Video {
         color: bool,
         acceleration: Acceleration,
         ambience: Ambience,
-    ) -> io::Result<()> {
+    ) -> Result<(), TermtvError> {
         play_source(input, width, height, fps, color, acceleration, ambience)
     }
 
     /// Capture a V4L2 webcam or OBS Virtual Camera and render it live.
-    pub fn play_camera(config: &CameraConfig) -> io::Result<()> {
+    pub fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
         play_camera(config)
     }
 
     /// Play this native TTV1 video in the terminal.
-    pub fn play(&self, color: bool) -> io::Result<()> {
+    pub fn play(&self, color: bool) -> Result<(), TermtvError> {
         let mut audio = self
             .audio
             .as_ref()

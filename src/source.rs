@@ -11,7 +11,7 @@ use crate::{
     accel::Acceleration,
     capture::{Ambience, CameraBehavior, CameraConfig},
     controls::TerminalControls,
-    error::{invalid, invalid_owned},
+    error::TermtvError,
     framebuffer::Framebuffer,
     platform::{configure_child_lifetime, signal_child},
     render::{
@@ -28,21 +28,24 @@ pub(crate) fn play_source(
     color: bool,
     acceleration: Acceleration,
     ambience: Ambience,
-) -> io::Result<()> {
+) -> Result<(), TermtvError> {
     let input_path = input.as_ref();
-    if width == 0 || height == 0 || !fps.is_finite() || fps <= 0.0 {
-        eprintln!("termtv_event=source_playback operation=validate_options error=invalid_dimensions_or_fps");
-        return Err(invalid("invalid source playback dimensions or FPS"));
+    if width == 0 || height == 0 {
+        eprintln!(
+            "termtv_event=source_playback operation=validate_options error=invalid_dimensions"
+        );
+        return Err(TermtvError::InvalidDimensions);
+    }
+    if !fps.is_finite() || fps <= 0.0 {
+        eprintln!("termtv_event=source_playback operation=validate_options error=invalid_fps");
+        return Err(TermtvError::InvalidFps);
     }
     if !input_path.to_string_lossy().contains("://") && !input_path.is_file() {
         eprintln!(
             "termtv_event=source_playback operation=validate_input error=file_not_found input={}",
             input_path.display()
         );
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("source input does not exist: {}", input_path.display()),
-        ));
+        return Err(TermtvError::InputNotFound(input_path.to_path_buf()));
     }
     let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
     eprintln!(
@@ -72,16 +75,18 @@ pub(crate) fn play_source(
                 "termtv_event=source_playback operation=start_video error={error} input={}",
                 input_path.display()
             );
-            io::Error::new(
+            TermtvError::Io(io::Error::new(
                 error.kind(),
                 format!("could not start FFmpeg video: {error}"),
-            )
+            ))
         })?;
     let video_diagnostics_reader = video.stderr.take().map(spawn_stderr_reader);
-    let mut raw = video
-        .stdout
-        .take()
-        .ok_or_else(|| invalid("FFmpeg did not provide source video output"))?;
+    let mut raw = video.stdout.take().ok_or_else(|| {
+        TermtvError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FFmpeg did not provide source video output",
+        ))
+    })?;
     let mut audio_command = Command::new("ffplay");
     configure_child_lifetime(&mut audio_command);
     let mut audio = audio_command
@@ -96,10 +101,10 @@ pub(crate) fn play_source(
                 "termtv_event=source_playback operation=start_audio error={error} input={}",
                 input_path.display()
             );
-            io::Error::new(
+            TermtvError::Io(io::Error::new(
                 error.kind(),
                 format!("could not start FFplay audio: {error}"),
-            )
+            ))
         })?;
     let audio_diagnostics_reader = audio.stderr.take().map(spawn_stderr_reader);
     let controls = TerminalControls::new();
@@ -111,7 +116,7 @@ pub(crate) fn play_source(
     let frame_size = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(6))
-        .ok_or_else(|| invalid("source frame dimensions overflow"))?;
+        .ok_or(TermtvError::InvalidDimensions)?;
     let mut bytes = vec![0; frame_size];
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let frame_time = Duration::from_secs_f32(1.0 / fps);
@@ -214,17 +219,19 @@ pub(crate) fn play_source(
         eprintln!(
             "termtv_event=source_playback operation=ffmpeg status={status} diagnostics={video_diagnostics}"
         );
-        return Err(invalid_owned(format!(
-            "FFmpeg failed during source playback: {video_diagnostics}"
-        )));
+        return Err(TermtvError::FfmpegFailed {
+            stage: "source_playback",
+            diagnostics: video_diagnostics,
+        });
     }
     if number == 0 {
         eprintln!(
             "termtv_event=source_playback operation=decode error=no_video_frames video={video_diagnostics} audio={audio_diagnostics}"
         );
-        return Err(invalid_owned(format!(
-            "source playback produced no video frames: {video_diagnostics}"
-        )));
+        return Err(TermtvError::FfmpegFailed {
+            stage: "source_decode",
+            diagnostics: video_diagnostics,
+        });
     }
     if !audio_status.success() {
         eprintln!(
@@ -235,16 +242,18 @@ pub(crate) fn play_source(
 }
 
 /// Capture a V4L2 webcam or OBS Virtual Camera and render it live.
-pub(crate) fn play_camera(config: &CameraConfig) -> io::Result<()> {
+pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
     if config.capture_width == 0
         || config.capture_height == 0
         || config.width == 0
         || config.height == 0
-        || !config.fps.is_finite()
-        || config.fps <= 0.0
     {
-        eprintln!("termtv_event=camera operation=validate_options error=invalid_dimensions_or_fps");
-        return Err(invalid("invalid camera dimensions or FPS"));
+        eprintln!("termtv_event=camera operation=validate_options error=invalid_dimensions");
+        return Err(TermtvError::InvalidDimensions);
+    }
+    if !config.fps.is_finite() || config.fps <= 0.0 {
+        eprintln!("termtv_event=camera operation=validate_options error=invalid_fps");
+        return Err(TermtvError::InvalidFps);
     }
     let filter = format!(
         "scale={}:{}:flags=bilinear",
@@ -273,24 +282,26 @@ pub(crate) fn play_camera(config: &CameraConfig) -> io::Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
-    let mut raw = capture
-        .stdout
-        .take()
-        .ok_or_else(|| invalid("FFmpeg did not provide camera output"))?;
+    let mut raw = capture.stdout.take().ok_or_else(|| {
+        TermtvError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FFmpeg did not provide camera output",
+        ))
+    })?;
     let stop_path = Path::new("/tmp/termtv-camera.stop");
     if let Err(error) = std::fs::remove_file(stop_path) {
         if error.kind() != io::ErrorKind::NotFound {
             eprintln!("termtv_event=camera operation=clear_stop_signal error={error}");
         }
     }
-    let result = render_raw_stream(
+    render_raw_stream(
         &mut raw,
         config.width,
         config.height,
         config.fps,
         config.color,
         config.behavior,
-    );
+    )?;
     if let Err(error) = capture.kill() {
         eprintln!("termtv_event=camera operation=stop_ffmpeg error={error}");
     }
@@ -302,7 +313,7 @@ pub(crate) fn play_camera(config: &CameraConfig) -> io::Result<()> {
             eprintln!("termtv_event=camera operation=clear_stop_signal error={error}");
         }
     }
-    result
+    Ok(())
 }
 
 /// Render a raw RGB24 stream to the terminal until EOF or stop signal.
@@ -319,7 +330,7 @@ pub(crate) fn render_raw_stream(
     let frame_size = width
         .checked_mul(height)
         .and_then(|pixels| pixels.checked_mul(6))
-        .ok_or_else(|| invalid("camera frame dimensions overflow"))?;
+        .ok_or(TermtvError::InvalidDimensions)?;
     let mut bytes = vec![0; frame_size];
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let frame_time = Duration::from_secs_f32(1.0 / fps);

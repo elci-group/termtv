@@ -31,7 +31,7 @@ fn main() -> io::Result<()> {
         Some("accel-info") => accel_info(),
         Some("camera") => camera(&args),
         Some(_) => {
-            eprintln!("termtv_event=cli operation=dispatch error=unknown_command");
+            termtv::event!("cli", "dispatch", error = "unknown_command");
             Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unknown command; run termtv --help",
@@ -94,12 +94,14 @@ fn convert(args: &[String]) -> io::Result<()> {
     let input = require_arg(args, 2, "usage: termtv convert <input> <output.ttv>")?;
     let output = require_arg(args, 3, "usage: termtv convert <input> <output.ttv>")?;
     let (width, height, fps) = parse_dimensions(args);
-    Video::convert_with_acceleration(input, output, width, height, fps, parse_acceleration(args))
+    Video::convert_with_acceleration(input, output, width, height, fps, parse_acceleration(args))?;
+    Ok(())
 }
 
 fn play(args: &[String]) -> io::Result<()> {
     let file = require_arg(args, 2, "usage: termtv play <file.ttv>")?;
-    Video::open(file)?.play(parse_color(args))
+    Video::open(file)?.play(parse_color(args))?;
+    Ok(())
 }
 
 fn play_source(args: &[String]) -> io::Result<()> {
@@ -113,7 +115,8 @@ fn play_source(args: &[String]) -> io::Result<()> {
         parse_color(args),
         parse_acceleration(args),
         parse_ambience(args),
-    )
+    )?;
+    Ok(())
 }
 
 fn playlist(args: &[String]) -> io::Result<()> {
@@ -235,7 +238,8 @@ fn camera(args: &[String]) -> io::Result<()> {
                 color: parse_color(args),
                 behavior,
                 acceleration: parse_acceleration(args),
-            })
+            })?;
+            Ok(())
         }
         _ => {
             eprintln!("termtv_event=camera operation=validate_command error=missing_on_or_off");

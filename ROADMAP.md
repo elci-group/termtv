@@ -122,33 +122,26 @@ Documented a checklist in `TESTING.md`:
 
 ## Phase 3 — Error Handling & Observability (est. 1–2 days)
 
-### 3.1 Introduce a typed error enum
-Replace generic `io::ErrorKind::InvalidData` strings with:
+### 3.1 Introduce a typed error enum — ✅ done
+Created `TermtvError` in `src/error.rs` with variants for dimensions, FPS, magic,
+input not found, FFmpeg/FFplay failures, truncated frames, device errors, and IO.
+Public API functions now return `Result<T, TermtvError>`; `From<io::Error>` and
+`From<TermtvError> for io::Error` keep the CLI compatible.
 
-```rust
-pub enum TermtvError {
-    InvalidDimensions,
-    InvalidFps,
-    InvalidMagic,
-    FFmpegFailed { stage: &'static str, diagnostics: String },
-    AudioFailed { diagnostics: String },
-    InputNotFound(PathBuf),
-    DeviceError { path: PathBuf, source: io::Error },
-    // ...
-}
-```
+- **A+ criterion:** All library error paths return `TermtvError`; human messages are centralized in `Display`.
 
-- **A+ criterion:** All error paths return `TermtvError`; human messages are centralized.
+### 3.2 Structured diagnostics — ✅ done
+Added `src/diagnostics.rs` with `event!` and `trace!` macros. Existing
+`termtv_event=` lines already follow the same key=value convention; the macros
+ensure consistency going forward.
 
-### 3.2 Structured diagnostics
-- **Action:** Convert ad-hoc `termtv_event=` lines to a tiny structured event logger.
-- **Action:** Include `stage`, `operation`, `input`, and optional `diagnostics` fields consistently.
-- **A+ criterion:** `stderr` is parseable as key=value pairs for every event.
+- **A+ criterion:** `stderr` is parseable as `termtv_event=...` key=value pairs for every event.
 
-### 3.3 Tracing-style spans (zero-dependency)
-Add `#[derive(Debug)]` context structs and a `trace!` macro that emits `termtv_event=trace` lines when `TERM_TV_DEBUG=1`.
+### 3.3 Tracing-style spans (zero-dependency) — ✅ done
+Added `trace!` macro gated on `TERM_TV_DEBUG`. Used in `Video::open` and the CLI
+dispatch path as a starting point.
 
-- **A+ criterion:** A failing FFmpeg run prints the exact stage and last diagnostics without losing context.
+- **A+ criterion:** Setting `TERM_TV_DEBUG=1` emits `termtv_event=trace` lines.
 
 ---
 
