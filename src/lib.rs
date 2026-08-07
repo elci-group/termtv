@@ -12,6 +12,7 @@
 pub mod accel;
 pub mod capture;
 pub mod color;
+pub mod config;
 pub mod framebuffer;
 pub mod platform;
 pub mod scene;
@@ -27,6 +28,7 @@ mod render;
 pub use accel::{available_accelerations, Acceleration};
 pub use capture::{Ambience, CameraBehavior, CameraConfig};
 pub use color::{Cell, Rgb};
+pub use config::Config;
 pub use framebuffer::Framebuffer;
 pub use scene::{DemoScene, Scene};
 pub use video::Video;
