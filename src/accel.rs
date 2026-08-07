@@ -62,3 +62,38 @@ pub fn available_accelerations() -> io::Result<Vec<String>> {
         .map(str::to_owned)
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_all_backends() {
+        for name in [
+            "auto", "software", "none", "vdpau", "cuda", "vaapi", "qsv", "drm", "opencl", "vulkan",
+        ] {
+            assert!(
+                Acceleration::parse(name).is_some(),
+                "failed to parse {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_is_case_insensitive() {
+        assert_eq!(Acceleration::parse("CUDA"), Some(Acceleration::Cuda));
+        assert_eq!(Acceleration::parse("VaApi"), Some(Acceleration::Vaapi));
+    }
+
+    #[test]
+    fn parse_rejects_invalid() {
+        assert!(Acceleration::parse("dxva").is_none());
+    }
+
+    #[test]
+    fn ffmpeg_name_maps_backends() {
+        assert_eq!(Acceleration::Auto.ffmpeg_name(), Some("auto"));
+        assert_eq!(Acceleration::Software.ffmpeg_name(), None);
+        assert_eq!(Acceleration::Vulkan.ffmpeg_name(), Some("vulkan"));
+    }
+}

@@ -53,3 +53,25 @@ pub struct CameraConfig {
     pub behavior: CameraBehavior,
     pub acceleration: Acceleration,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ambience_parse() {
+        assert_eq!(Ambience::parse("off"), Some(Ambience::Off));
+        assert_eq!(Ambience::parse("PULSE"), Some(Ambience::Pulse));
+        assert_eq!(Ambience::parse("invalid"), None);
+    }
+
+    #[test]
+    fn camera_behavior_parse() {
+        assert_eq!(CameraBehavior::parse("live"), Some(CameraBehavior::Live));
+        assert_eq!(
+            CameraBehavior::parse("Snapshot"),
+            Some(CameraBehavior::Snapshot)
+        );
+        assert_eq!(CameraBehavior::parse("invalid"), None);
+    }
+}

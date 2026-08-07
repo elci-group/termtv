@@ -7,6 +7,14 @@ path = "AGENTS.md"
 required = true
 
 [[file]]
+path = "TESTING.md"
+required = true
+
+[[file]]
+path = ".amber.toml"
+required = true
+
+[[file]]
 path = "src/lib.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
@@ -68,6 +76,16 @@ forbid_regex = ["TODO", "FIXME", "unimplemented!"]
 
 [[file]]
 path = "src/video.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "tests/cli_help.rs"
+required = true
+forbid_regex = ["TODO", "FIXME", "unimplemented!"]
+
+[[file]]
+path = "tests/ttv1_round_trip.rs"
 required = true
 forbid_regex = ["TODO", "FIXME", "unimplemented!"]
 

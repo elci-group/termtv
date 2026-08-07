@@ -121,4 +121,78 @@ mod tests {
         assert!(encoded.starts_with("\x1b[1;3H"));
         assert_eq!(encoded.matches('▀').count(), 1);
     }
+
+    #[test]
+    fn clear_fills_all_cells() {
+        let mut frame = Framebuffer::new(3, 2);
+        frame.clear(Rgb(1, 2, 3));
+        for y in 0..frame.height {
+            for x in 0..frame.width {
+                let cell = frame.get(x, y);
+                assert_eq!(cell.top, Rgb(1, 2, 3));
+                assert_eq!(cell.bottom, Rgb(1, 2, 3));
+            }
+        }
+    }
+
+    #[test]
+    fn set_ignores_out_of_bounds() {
+        let mut frame = Framebuffer::new(2, 2);
+        frame.set(
+            5,
+            5,
+            Cell {
+                top: Rgb(1, 1, 1),
+                bottom: Rgb(2, 2, 2),
+            },
+        );
+        // Should not panic and frame should remain default black.
+        assert_eq!(frame.get(1, 1), Cell::default());
+    }
+
+    #[test]
+    fn diff_encodes_color_codes_when_enabled() {
+        let old = Framebuffer::new(1, 1);
+        let mut new = old.clone();
+        new.set(
+            0,
+            0,
+            Cell {
+                top: Rgb(255, 0, 0),
+                bottom: Rgb(0, 255, 0),
+            },
+        );
+        let encoded = new.diff_ansi(&old, true);
+        assert!(encoded.contains("38;2;255;0;0"));
+        assert!(encoded.contains("48;2;0;255;0"));
+    }
+
+    /// Deterministic property test: changing any cell produces a non-empty diff,
+    /// and changing N cells in a single row produces exactly N half-block chars.
+    #[test]
+    fn diff_contains_one_block_per_changed_cell() {
+        let mut state = 0x1234_5678_9abc_def0_u64;
+        let mut rand = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(14_495_773_328_340_234_579);
+            (state >> 32) as usize
+        };
+
+        let previous = Framebuffer::new(8, 1);
+        let mut current = previous.clone();
+        for i in 0..8 {
+            current.set(
+                i,
+                0,
+                Cell {
+                    top: Rgb(rand() as u8, rand() as u8, rand() as u8),
+                    bottom: Rgb(rand() as u8, rand() as u8, rand() as u8),
+                },
+            );
+            let encoded = current.diff_ansi(&previous, true);
+            assert!(!encoded.is_empty());
+            assert_eq!(encoded.matches('▀').count(), i + 1);
+        }
+    }
 }

@@ -43,13 +43,13 @@ pub(crate) fn apply_ambience(frame: &mut Framebuffer, ambience: Ambience, time: 
     }
 }
 
-/// Read exactly one frame worth of bytes, returning `false` on clean EOF.
+/// Read exactly one frame worth of bytes, returning `false` on EOF.
 pub(crate) fn read_frame(raw: &mut impl Read, frame: &mut [u8]) -> io::Result<bool> {
     let mut filled = 0;
     while filled < frame.len() {
         let n = raw.read(&mut frame[filled..])?;
         if n == 0 {
-            return Ok(filled == 0);
+            return Ok(false);
         }
         filled += n;
     }
@@ -145,5 +145,20 @@ mod tests {
         assert_eq!(frame.get(0, 0).bottom, Rgb(7, 8, 9));
         assert_eq!(frame.get(1, 0).top, Rgb(4, 5, 6));
         assert_eq!(frame.get(1, 0).bottom, Rgb(10, 11, 12));
+    }
+
+    #[test]
+    fn read_frame_returns_false_on_eof() {
+        let mut buf = [0u8; 4];
+        let mut empty: &[u8] = b"";
+        assert!(!read_frame(&mut empty, &mut buf).unwrap());
+    }
+
+    #[test]
+    fn read_frame_reads_exactly_one_frame() {
+        let mut buf = [0u8; 4];
+        let mut data: &[u8] = &[1, 2, 3, 4, 5, 6];
+        assert!(read_frame(&mut data, &mut buf).unwrap());
+        assert_eq!(buf, [1, 2, 3, 4]);
     }
 }
