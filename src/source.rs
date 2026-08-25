@@ -19,6 +19,19 @@ use crate::{
     },
 };
 
+/// Options controlling FFmpeg-backed source playback.
+#[derive(Clone, Copy, Debug)]
+pub struct PlaybackOptions {
+    pub width: usize,
+    pub height: usize,
+    pub fps: f32,
+    pub color: bool,
+    pub acceleration: Acceleration,
+    pub ambience: Ambience,
+    pub loop_playback: bool,
+    pub volume: u8,
+}
+
 /// Validate dimensions and play a source video file or stream through FFmpeg.
 /// Verify that FFmpeg and FFplay are available in PATH.
 pub(crate) fn check_ffmpeg_tools() -> Result<(), TermtvError> {
@@ -35,25 +48,21 @@ pub(crate) fn check_ffmpeg_tools() -> Result<(), TermtvError> {
 
 pub(crate) fn play_source(
     input: impl AsRef<Path>,
-    width: usize,
-    height: usize,
-    fps: f32,
-    color: bool,
-    acceleration: Acceleration,
-    ambience: Ambience,
+    options: &PlaybackOptions,
+    backend: &dyn crate::backend::Backend,
 ) -> Result<(), TermtvError> {
     let input_path = input.as_ref();
-    if width == 0
-        || height == 0
-        || width > crate::constants::MAX_DIMENSION
-        || height > crate::constants::MAX_DIMENSION
+    if options.width == 0
+        || options.height == 0
+        || options.width > crate::constants::MAX_DIMENSION
+        || options.height > crate::constants::MAX_DIMENSION
     {
         eprintln!(
             "termtv_event=source_playback operation=validate_options error=invalid_dimensions"
         );
         return Err(TermtvError::InvalidDimensions);
     }
-    if !fps.is_finite() || fps <= 0.0 {
+    if !options.fps.is_finite() || options.fps <= 0.0 {
         eprintln!("termtv_event=source_playback operation=validate_options error=invalid_fps");
         return Err(TermtvError::InvalidFps);
     }
@@ -65,18 +74,47 @@ pub(crate) fn play_source(
         return Err(TermtvError::InputNotFound(input_path.to_path_buf()));
     }
     check_ffmpeg_tools()?;
+    let controls = TerminalControls::new();
+    let mut ambience = options.ambience;
+    loop {
+        let quit = run_source_pass(input_path, options, backend, &controls, &mut ambience)?;
+        if quit || !options.loop_playback {
+            return Ok(());
+        }
+        eprintln!(
+            "termtv_event=source_playback operation=loop_restart input={}",
+            input_path.display()
+        );
+    }
+}
+
+/// Run a single spawn-stream-reap pass of source playback. Returns `true` if
+/// the user requested quit (`q`/Ctrl-C), in which case the caller must not
+/// loop again even if `loop_playback` is set.
+fn run_source_pass(
+    input_path: &Path,
+    options: &PlaybackOptions,
+    backend: &dyn crate::backend::Backend,
+    controls: &TerminalControls,
+    ambience: &mut Ambience,
+) -> Result<bool, TermtvError> {
+    let width = options.width;
+    let height = options.height;
+    let fps = options.fps;
+    let color = options.color;
     let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
     eprintln!(
-        "termtv_event=source_playback operation=start input={} width={} height={} fps={} acceleration={acceleration:?}",
+        "termtv_event=source_playback operation=start input={} width={} height={} fps={} acceleration={:?}",
         input_path.display(),
         width,
         height,
-        fps
+        fps,
+        options.acceleration
     );
     let mut command = Command::new("ffmpeg");
     configure_child_lifetime(&mut command);
     command.args(["-v", "error"]);
-    if let Some(hwaccel) = acceleration.ffmpeg_name() {
+    if let Some(hwaccel) = options.acceleration.ffmpeg_name() {
         command.args(["-hwaccel", hwaccel]);
     }
     let mut video = command
@@ -109,6 +147,7 @@ pub(crate) fn play_source(
     configure_child_lifetime(&mut audio_command);
     let mut audio = audio_command
         .args(["-nodisp", "-autoexit", "-loglevel", "error"])
+        .args(["-volume", &options.volume.min(100).to_string()])
         .arg(input_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -125,9 +164,7 @@ pub(crate) fn play_source(
             ))
         })?;
     let audio_diagnostics_reader = audio.stderr.take().map(spawn_stderr_reader);
-    let controls = TerminalControls::new();
     let mut paused = false;
-    let mut ambience = ambience;
     let mut quit = false;
     let mut current = Framebuffer::new(width, height);
     let mut previous = current.clone();
@@ -157,7 +194,7 @@ pub(crate) fn play_source(
                     signal_child(audio.id(), signal);
                 }
                 b'a' => {
-                    ambience = if ambience == Ambience::Off {
+                    *ambience = if *ambience == Ambience::Off {
                         Ambience::Pulse
                     } else {
                         Ambience::Off
@@ -191,21 +228,23 @@ pub(crate) fn play_source(
             std::thread::sleep(next - now);
         }
         copy_rgb24_to_frame(&mut current, &bytes, width, height);
-        apply_ambience(&mut current, ambience, number as f32 / fps);
-        let diff = current.diff_ansi(&previous, color);
+        apply_ambience(&mut current, *ambience, number as f32 / fps);
+        let diff = backend.render(&current, &previous, color);
         write!(
             stdout,
-            "{}\x1b[{};1H\x1b[0mTTV source | {:.1} FPS | frame {} | {} | ambience:{} | buffer:{:.0}ms",
+            "{}\x1b[{};1H\x1b[0mTTV source | {} | {:.1} FPS | frame {} | {} | ambience:{} | loop:{} | buffer:{:.0}ms",
             diff,
             height + 1,
+            backend.name(),
             fps,
             number + 1,
             if paused { "PAUSED" } else { "PLAYING" },
-            if ambience == Ambience::Pulse {
+            if *ambience == Ambience::Pulse {
                 "pulse"
             } else {
                 "off"
             },
+            if options.loop_playback { "on" } else { "off" },
             buffer_ms
         )?;
         stdout.flush()?;
@@ -256,11 +295,14 @@ pub(crate) fn play_source(
             "termtv_event=source_playback operation=audio_status status={audio_status} diagnostics={audio_diagnostics}"
         );
     }
-    Ok(())
+    Ok(quit)
 }
 
 /// Capture a V4L2 webcam or OBS Virtual Camera and render it live.
-pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
+pub(crate) fn play_camera(
+    config: &CameraConfig,
+    backend: &dyn crate::backend::Backend,
+) -> Result<(), TermtvError> {
     if config.capture_width == 0
         || config.capture_height == 0
         || config.width == 0
@@ -327,15 +369,7 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
     })?;
     let camera_pid = std::process::id();
     clear_camera_stop(camera_pid);
-    render_raw_stream(
-        &mut raw,
-        config.width,
-        config.height,
-        config.fps,
-        config.color,
-        config.behavior,
-        camera_pid,
-    )?;
+    render_raw_stream(&mut raw, config, camera_pid, backend)?;
     if let Err(error) = capture.kill() {
         eprintln!("termtv_event=camera operation=stop_ffmpeg error={error}");
     }
@@ -349,13 +383,14 @@ pub(crate) fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
 /// Render a raw RGB24 stream to the terminal until EOF or stop signal.
 pub(crate) fn render_raw_stream(
     raw: &mut impl io::Read,
-    width: usize,
-    height: usize,
-    fps: f32,
-    color: bool,
-    behavior: CameraBehavior,
+    config: &CameraConfig,
     pid: u32,
+    backend: &dyn crate::backend::Backend,
 ) -> io::Result<()> {
+    let width = config.width;
+    let height = config.height;
+    let fps = config.fps;
+    let color = config.color;
     let mut current = Framebuffer::new(width, height);
     let mut previous = current.clone();
     let frame_size = width
@@ -381,12 +416,13 @@ pub(crate) fn render_raw_stream(
             std::thread::sleep(next - now);
         }
         copy_rgb24_to_frame(&mut current, &bytes, width, height);
-        let diff = current.diff_ansi(&previous, color);
+        let diff = backend.render(&current, &previous, color);
         write!(
             stdout,
-            "{}\x1b[{};1H\x1b[0mCamera | {:.1} FPS | frame {}",
+            "{}\x1b[{};1H\x1b[0mCamera | {} | {:.1} FPS | frame {}",
             diff,
             height + 1,
+            backend.name(),
             fps,
             number + 1
         )?;
@@ -394,7 +430,7 @@ pub(crate) fn render_raw_stream(
         std::mem::swap(&mut current, &mut previous);
         number += 1;
         next += frame_time;
-        if behavior == CameraBehavior::Snapshot {
+        if config.behavior == CameraBehavior::Snapshot {
             break;
         }
     }

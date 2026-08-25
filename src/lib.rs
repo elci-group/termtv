@@ -10,6 +10,7 @@
 //! re-exports in this crate root.
 
 pub mod accel;
+pub mod backend;
 pub mod capture;
 pub mod color;
 pub mod config;
@@ -26,9 +27,13 @@ mod error;
 mod render;
 
 pub use accel::{available_accelerations, Acceleration};
+pub use backend::{
+    default_backend, parse_backend, AnsiBackend, Backend, KittyBackend, SixelBackend,
+};
 pub use capture::{Ambience, CameraBehavior, CameraConfig};
 pub use color::{Cell, Rgb};
 pub use config::Config;
 pub use framebuffer::Framebuffer;
 pub use scene::{DemoScene, Scene};
+pub use source::PlaybackOptions;
 pub use video::Video;

@@ -4,19 +4,20 @@ use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom, Write as IoWrite},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::Instant,
 };
 
 use crate::{
     accel::Acceleration,
-    capture::{Ambience, CameraConfig},
+    capture::CameraConfig,
     color::Cell,
+    controls::TerminalControls,
     error::TermtvError,
     framebuffer::Framebuffer,
-    platform::configure_child_lifetime,
+    platform::{configure_child_lifetime, signal_child},
     render::{finish_stderr_reader, report_conversion_progress, spawn_stderr_reader},
-    source::{check_ffmpeg_tools, play_camera, play_source},
+    source::{check_ffmpeg_tools, play_camera, play_source, PlaybackOptions},
 };
 
 const VIDEO_MAGIC: &[u8; 4] = b"TTV1";
@@ -220,66 +221,115 @@ impl Video {
     /// Stream a source video through FFmpeg without loading it into RAM.
     pub fn play_source(
         input: impl AsRef<Path>,
-        width: usize,
-        height: usize,
-        fps: f32,
-        color: bool,
-        acceleration: Acceleration,
-        ambience: Ambience,
+        options: &PlaybackOptions,
+        backend: &dyn crate::backend::Backend,
     ) -> Result<(), TermtvError> {
-        play_source(input, width, height, fps, color, acceleration, ambience)
+        play_source(input, options, backend)
     }
 
     /// Capture a V4L2 webcam or OBS Virtual Camera and render it live.
-    pub fn play_camera(config: &CameraConfig) -> Result<(), TermtvError> {
-        play_camera(config)
+    pub fn play_camera(
+        config: &CameraConfig,
+        backend: &dyn crate::backend::Backend,
+    ) -> Result<(), TermtvError> {
+        play_camera(config, backend)
     }
 
     /// Play this native TTV1 video in the terminal.
-    pub fn play(&self, color: bool) -> Result<(), TermtvError> {
-        let mut audio = self
-            .audio
-            .as_ref()
-            .map(|path| {
-                let mut command = Command::new("ffplay");
-                configure_child_lifetime(&mut command);
-                command
-                    .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
-                    .arg(path)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-            })
-            .transpose()?;
+    ///
+    /// `p`/space pauses (and suspends the audio child, if any), `q`/Ctrl-C
+    /// quits, and `loop_playback` restarts from the first frame once the
+    /// last frame has played (respawning audio so it stays roughly in sync).
+    pub fn play(
+        &self,
+        color: bool,
+        loop_playback: bool,
+        volume: u8,
+        backend: &dyn crate::backend::Backend,
+    ) -> Result<(), TermtvError> {
+        let spawn_audio = |path: &Path| -> io::Result<Child> {
+            let mut command = Command::new("ffplay");
+            configure_child_lifetime(&mut command);
+            command
+                .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
+                .args(["-volume", &volume.min(100).to_string()])
+                .arg(path)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        };
+        let mut audio = self.audio.as_deref().map(spawn_audio).transpose()?;
+        let controls = TerminalControls::new();
         let mut current = Framebuffer::new(self.width, self.height);
         let mut previous = current.clone();
         let mut stdout = io::BufWriter::new(io::stdout().lock());
         let frame_time = std::time::Duration::from_secs_f32(1.0 / self.fps.max(1.0));
         let mut next = Instant::now();
+        let mut paused = false;
+        let mut quit = false;
         write!(stdout, "\x1b[2J\x1b[?25l")?;
-        for (number, pixels) in self.frames.iter().enumerate() {
-            let now = Instant::now();
-            if now < next {
-                std::thread::sleep(next - now);
+        'playback: loop {
+            for (number, pixels) in self.frames.iter().enumerate() {
+                loop {
+                    while let Ok(key) = controls.receiver.try_recv() {
+                        match key {
+                            b'p' | b' ' => {
+                                paused = !paused;
+                                if let Some(child) = audio.as_ref() {
+                                    signal_child(child.id(), if paused { "STOP" } else { "CONT" });
+                                }
+                            }
+                            b'q' | 3 => quit = true,
+                            _ => {}
+                        }
+                    }
+                    if quit || !paused {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if quit {
+                    break 'playback;
+                }
+                let now = Instant::now();
+                if now < next {
+                    std::thread::sleep(next - now);
+                }
+                current.cells.copy_from_slice(pixels);
+                let diff = backend.render(&current, &previous, color);
+                write!(
+                    stdout,
+                    "{}\x1b[{};1H\x1b[0mTTV1 | {} | {:.1} FPS | frame {}/{} | {}",
+                    diff,
+                    self.height + 1,
+                    backend.name(),
+                    self.fps,
+                    number + 1,
+                    self.frames.len(),
+                    if paused { "PAUSED" } else { "PLAYING" }
+                )?;
+                stdout.flush()?;
+                std::mem::swap(&mut current, &mut previous);
+                next += frame_time;
             }
-            current.cells.copy_from_slice(pixels);
-            let diff = current.diff_ansi(&previous, color);
-            write!(
-                stdout,
-                "{}\x1b[{};1H\x1b[0mTTV1 | {:.1} FPS | frame {}/{}",
-                diff,
-                self.height + 1,
-                self.fps,
-                number + 1,
-                self.frames.len()
-            )?;
-            stdout.flush()?;
-            std::mem::swap(&mut current, &mut previous);
-            next += frame_time;
+            if !loop_playback {
+                break;
+            }
+            if let Some(mut child) = audio.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            audio = self.audio.as_deref().map(spawn_audio).transpose()?;
+            next = Instant::now();
         }
         writeln!(stdout, "\x1b[0m\x1b[?25h")?;
         stdout.flush()?;
+        if quit {
+            if let Some(child) = audio.as_ref() {
+                signal_child(child.id(), "TERM");
+            }
+        }
         if let Some(child) = audio.as_mut() {
             if let Err(error) = child.wait() {
                 eprintln!("termtv_event=native_playback operation=wait_audio error={error}");

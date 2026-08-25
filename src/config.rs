@@ -13,6 +13,8 @@
 //! hwaccel = "auto"
 //! ambience = "off"
 //! color = true
+//! backend = "ansi"
+//! volume = 100
 //! ```
 //!
 //! CLI flags always override config values.
@@ -28,6 +30,8 @@ pub struct Config {
     pub hwaccel: Option<String>,
     pub ambience: Option<String>,
     pub color: Option<bool>,
+    pub backend: Option<String>,
+    pub volume: Option<u8>,
 }
 
 impl Config {
@@ -70,6 +74,8 @@ impl Config {
                 "hwaccel" => config.hwaccel = Some(value.to_owned()),
                 "ambience" => config.ambience = Some(value.to_owned()),
                 "color" => config.color = parse_bool(value),
+                "backend" => config.backend = Some(value.to_owned()),
+                "volume" => config.volume = value.parse().ok(),
                 _ => {}
             }
         }
@@ -120,6 +126,8 @@ mod tests {
             hwaccel = "vaapi"
             ambience = "pulse"
             color = false
+            backend = "kitty"
+            volume = 75
         "#;
         let config = Config::parse(text);
         assert_eq!(config.width, Some(100));
@@ -128,6 +136,8 @@ mod tests {
         assert_eq!(config.hwaccel, Some("vaapi".to_owned()));
         assert_eq!(config.ambience, Some("pulse".to_owned()));
         assert_eq!(config.color, Some(false));
+        assert_eq!(config.backend, Some("kitty".to_owned()));
+        assert_eq!(config.volume, Some(75));
     }
 
     #[test]

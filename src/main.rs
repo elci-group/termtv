@@ -11,8 +11,8 @@ use std::{
     time::{Duration, Instant},
 };
 use termtv::{
-    available_accelerations, Acceleration, Ambience, CameraBehavior, CameraConfig, Config,
-    DemoScene, Framebuffer, Scene, Video,
+    available_accelerations, default_backend, Acceleration, Ambience, Backend, CameraBehavior,
+    CameraConfig, Config, DemoScene, Framebuffer, Scene, Video,
 };
 
 const BASH_COMPLETION: &str = include_str!("../completions/termtv.bash");
@@ -70,8 +70,12 @@ fn print_command_help(command: Option<&str>) -> io::Result<()> {
             "termtv play <file.ttv> [options]\n\n\
              Play a native .ttv1 file.\n\n\
              Options:\n\
-               --no-color  Disable ANSI color\n\
-               --color     Force ANSI color on"
+               --no-color       Disable ANSI color\n\
+               --color          Force ANSI color on\n\
+               --loop           Restart from the first frame when playback ends\n\
+               --backend ID     Render backend: ansi, kitty, sixel (default: ansi)\n\
+               --volume N       Audio volume 0-100 (default: 100)\n\n\
+             Keys: p/space pause, q quit."
         ),
         Some("play-source") => println!(
             "termtv play-source <input> [options]\n\n\
@@ -81,7 +85,11 @@ fn print_command_help(command: Option<&str>) -> io::Result<()> {
                --height N    Output height in terminal cells (default: 34)\n\
                --fps N       Target frames per second (default: 24)\n\
                --hwaccel ID  Hardware backend: auto, vaapi, qsv, cuda, vdpau, drm, opencl, vulkan\n\
-               --ambience ID Ambience mode: off, pulse, strobe"
+               --ambience ID Ambience mode: off, pulse, strobe\n\
+               --loop        Restart the source from the beginning when it ends\n\
+               --backend ID  Render backend: ansi, kitty, sixel (default: ansi)\n\
+               --volume N    Audio volume 0-100 (default: 100)\n\n\
+             Keys: p/space pause, a toggle ambience, q quit."
         ),
         Some("playlist") => println!(
             "termtv playlist list <file.m3u>\n\
@@ -125,8 +133,8 @@ fn print_help() {
         "termtv — hardware-aware terminal video\n\n\
          Commands:\n\
            termtv convert <input> <output.ttv> [--width N --height N --fps N --hwaccel auto]\n\
-           termtv play <file.ttv> [--no-color]\n\
-           termtv play-source <input> [--width N --height N --fps N --hwaccel auto]\n\
+           termtv play <file.ttv> [--no-color --loop --volume N --backend ansi|kitty|sixel]\n\
+           termtv play-source <input> [--width N --height N --fps N --hwaccel auto --loop --volume N --backend ansi|kitty|sixel]\n\
            termtv playlist list <file.m3u>\n\
            termtv playlist play <file.m3u> [playback options]\n\
            termtv camera on [--device /dev/video0 | --obs] [--width N --height N --capture-width N --capture-height N --fps N]\n\
@@ -137,7 +145,7 @@ fn print_help() {
          Run `termtv <command> --help` for per-command details.\n\n\
          Hardware acceleration defaults to --hwaccel auto for convert, play-source, and camera.\n\
          Backends include vaapi, qsv, cuda, vdpau, drm, opencl, and vulkan.\n\
-         Playback keys: p/space pause, a toggle ambience, q quit.\n\
+         Playback keys: p/space pause, q quit (play, play-source); a toggle ambience (play-source).\n\
          M3U playlists accept local files and legal/public streams supplied by the user."
     );
 }
@@ -182,6 +190,21 @@ fn parse_ambience(args: &[String], config: &Config) -> Ambience {
         .unwrap_or(Ambience::Off)
 }
 
+fn parse_loop(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--loop")
+}
+
+fn parse_volume(args: &[String], config: &Config) -> u8 {
+    value(args, "--volume", config.volume.unwrap_or(100)).min(100)
+}
+
+fn select_backend(args: &[String], config: &Config) -> Box<dyn Backend + Send + Sync> {
+    value_opt(args, "--backend")
+        .and_then(|value| termtv::parse_backend(&value))
+        .or_else(|| config.backend.as_deref().and_then(termtv::parse_backend))
+        .unwrap_or_else(default_backend)
+}
+
 fn convert(args: &[String], config: &Config) -> io::Result<()> {
     let input = require_arg(args, 2, "usage: termtv convert <input> <output.ttv>")?;
     let output = require_arg(args, 3, "usage: termtv convert <input> <output.ttv>")?;
@@ -199,22 +222,29 @@ fn convert(args: &[String], config: &Config) -> io::Result<()> {
 
 fn play(args: &[String], config: &Config) -> io::Result<()> {
     let file = require_arg(args, 2, "usage: termtv play <file.ttv>")?;
-    Video::open(file)?.play(parse_color(args, config))?;
+    Video::open(file)?.play(
+        parse_color(args, config),
+        parse_loop(args),
+        parse_volume(args, config),
+        select_backend(args, config).as_ref(),
+    )?;
     Ok(())
 }
 
 fn play_source(args: &[String], config: &Config) -> io::Result<()> {
     let input = require_arg(args, 2, "usage: termtv play-source <input>")?;
     let (width, height, fps) = parse_dimensions(args, config);
-    Video::play_source(
-        input,
+    let options = termtv::PlaybackOptions {
         width,
         height,
         fps,
-        parse_color(args, config),
-        parse_acceleration(args, config),
-        parse_ambience(args, config),
-    )?;
+        color: parse_color(args, config),
+        acceleration: parse_acceleration(args, config),
+        ambience: parse_ambience(args, config),
+        loop_playback: parse_loop(args),
+        volume: parse_volume(args, config),
+    };
+    Video::play_source(input, &options, select_backend(args, config).as_ref())?;
     Ok(())
 }
 
@@ -267,7 +297,14 @@ fn play_source_for_path(input: &str, args: &[String], config: &Config) -> io::Re
         "play-source".to_owned(),
         input.to_owned(),
     ];
-    playback_args.extend(args.iter().skip(4).cloned());
+    // `--loop` repeats a single source forever, which would stall playlist
+    // advancement, so it is not propagated to per-entry playback.
+    playback_args.extend(
+        args.iter()
+            .skip(4)
+            .filter(|a| a.as_str() != "--loop")
+            .cloned(),
+    );
     play_source(&playback_args, config)
 }
 
@@ -356,17 +393,20 @@ fn camera(args: &[String], config: &Config) -> io::Result<()> {
                     "OBS Virtual Camera requires --device /dev/videoN",
                 ));
             }
-            Video::play_camera(&CameraConfig {
-                device: device.into(),
-                capture_width,
-                capture_height,
-                width,
-                height,
-                fps,
-                color: parse_color(args, config),
-                behavior,
-                acceleration: parse_acceleration(args, config),
-            })?;
+            Video::play_camera(
+                &CameraConfig {
+                    device: device.into(),
+                    capture_width,
+                    capture_height,
+                    width,
+                    height,
+                    fps,
+                    color: parse_color(args, config),
+                    behavior,
+                    acceleration: parse_acceleration(args, config),
+                },
+                select_backend(args, config).as_ref(),
+            )?;
             Ok(())
         }
         _ => {
