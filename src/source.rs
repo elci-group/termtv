@@ -32,6 +32,16 @@ pub struct PlaybackOptions {
     pub volume: u8,
 }
 
+/// Outcome of a single source-playback pass.
+enum PassOutcome {
+    /// The stream reached its end normally.
+    Ended,
+    /// The user pressed quit (`q`/Ctrl-C).
+    Quit,
+    /// The user requested a seek; resume from this offset in seconds.
+    Seek(f32),
+}
+
 /// Validate dimensions and play a source video file or stream through FFmpeg.
 /// Verify that FFmpeg and FFplay are available in PATH.
 pub(crate) fn check_ffmpeg_tools() -> Result<(), TermtvError> {
@@ -76,46 +86,64 @@ pub(crate) fn play_source(
     check_ffmpeg_tools()?;
     let controls = TerminalControls::new();
     let mut ambience = options.ambience;
+    let mut offset = 0.0_f32;
     loop {
-        let quit = run_source_pass(input_path, options, backend, &controls, &mut ambience)?;
-        if quit || !options.loop_playback {
-            return Ok(());
+        match run_source_pass(
+            input_path,
+            options,
+            backend,
+            &controls,
+            &mut ambience,
+            offset,
+        )? {
+            PassOutcome::Quit => return Ok(()),
+            PassOutcome::Seek(target) => offset = target,
+            PassOutcome::Ended => {
+                if !options.loop_playback {
+                    return Ok(());
+                }
+                offset = 0.0;
+                eprintln!(
+                    "termtv_event=source_playback operation=loop_restart input={}",
+                    input_path.display()
+                );
+            }
         }
-        eprintln!(
-            "termtv_event=source_playback operation=loop_restart input={}",
-            input_path.display()
-        );
     }
 }
 
-/// Run a single spawn-stream-reap pass of source playback. Returns `true` if
-/// the user requested quit (`q`/Ctrl-C), in which case the caller must not
-/// loop again even if `loop_playback` is set.
+/// Run a single spawn-stream-reap pass of source playback, starting at
+/// `start_offset` seconds into the source.
 fn run_source_pass(
     input_path: &Path,
     options: &PlaybackOptions,
     backend: &dyn crate::backend::Backend,
     controls: &TerminalControls,
     ambience: &mut Ambience,
-) -> Result<bool, TermtvError> {
+    start_offset: f32,
+) -> Result<PassOutcome, TermtvError> {
     let width = options.width;
     let height = options.height;
     let fps = options.fps;
     let color = options.color;
     let filter = format!("scale={}:{}:flags=bilinear,fps={}", width, height * 2, fps);
     eprintln!(
-        "termtv_event=source_playback operation=start input={} width={} height={} fps={} acceleration={:?}",
+        "termtv_event=source_playback operation=start input={} width={} height={} fps={} acceleration={:?} offset={:.1}",
         input_path.display(),
         width,
         height,
         fps,
-        options.acceleration
+        options.acceleration,
+        start_offset
     );
     let mut command = Command::new("ffmpeg");
     configure_child_lifetime(&mut command);
     command.args(["-v", "error"]);
     if let Some(hwaccel) = options.acceleration.ffmpeg_name() {
         command.args(["-hwaccel", hwaccel]);
+    }
+    if start_offset > 0.0 {
+        command.args(["-ss", &start_offset.to_string()]);
     }
     let mut video = command
         .arg("-i")
@@ -145,9 +173,13 @@ fn run_source_pass(
     })?;
     let mut audio_command = Command::new("ffplay");
     configure_child_lifetime(&mut audio_command);
-    let mut audio = audio_command
+    audio_command
         .args(["-nodisp", "-autoexit", "-loglevel", "error"])
-        .args(["-volume", &options.volume.min(100).to_string()])
+        .args(["-volume", &options.volume.min(100).to_string()]);
+    if start_offset > 0.0 {
+        audio_command.args(["-ss", &start_offset.to_string()]);
+    }
+    let mut audio = audio_command
         .arg(input_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -166,6 +198,7 @@ fn run_source_pass(
     let audio_diagnostics_reader = audio.stderr.take().map(spawn_stderr_reader);
     let mut paused = false;
     let mut quit = false;
+    let mut seek_to: Option<f32> = None;
     let mut current = Framebuffer::new(width, height);
     let mut previous = current.clone();
     let frame_size = width
@@ -192,6 +225,20 @@ fn run_source_pass(
                     let signal = if paused { "STOP" } else { "CONT" };
                     signal_child(video.id(), signal);
                     signal_child(audio.id(), signal);
+                    // Pausing skips the frame-render loop below, the only
+                    // other place this status line is written, so show the
+                    // new state now.
+                    write!(
+                        stdout,
+                        "\x1b[{};1H\x1b[0mTTV source | {} | {:.1} FPS | frame {} | pos:{:.0}s | {}",
+                        height + 1,
+                        backend.name(),
+                        fps,
+                        number + 1,
+                        start_offset + number as f32 / fps,
+                        if paused { "PAUSED" } else { "PLAYING" }
+                    )?;
+                    stdout.flush()?;
                 }
                 b'a' => {
                     *ambience = if *ambience == Ambience::Off {
@@ -200,14 +247,25 @@ fn run_source_pass(
                         Ambience::Off
                     }
                 }
+                b'[' | b']' => {
+                    let elapsed = start_offset + number as f32 / fps;
+                    let delta = if key == b'[' {
+                        -crate::constants::SEEK_STEP_SECS
+                    } else {
+                        crate::constants::SEEK_STEP_SECS
+                    };
+                    seek_to = Some((elapsed + delta).max(0.0));
+                }
                 b'q' | 3 => {
                     quit = true;
-                    break;
                 }
                 _ => {}
             }
+            if quit || seek_to.is_some() {
+                break;
+            }
         }
-        if quit {
+        if quit || seek_to.is_some() {
             break;
         }
         if paused {
@@ -232,12 +290,13 @@ fn run_source_pass(
         let diff = backend.render(&current, &previous, color);
         write!(
             stdout,
-            "{}\x1b[{};1H\x1b[0mTTV source | {} | {:.1} FPS | frame {} | {} | ambience:{} | loop:{} | buffer:{:.0}ms",
+            "{}\x1b[{};1H\x1b[0mTTV source | {} | {:.1} FPS | frame {} | pos:{:.0}s | {} | ambience:{} | loop:{} | buffer:{:.0}ms",
             diff,
             height + 1,
             backend.name(),
             fps,
             number + 1,
+            start_offset + number as f32 / fps,
             if paused { "PAUSED" } else { "PLAYING" },
             if *ambience == Ambience::Pulse {
                 "pulse"
@@ -252,9 +311,26 @@ fn run_source_pass(
         number += 1;
         next += frame_time;
     }
-    if quit {
+    if quit || seek_to.is_some() {
+        // We are terminating these children ourselves (quit or seek), so a
+        // non-zero exit from SIGTERM is expected, not a playback failure.
         signal_child(video.id(), "TERM");
         signal_child(audio.id(), "TERM");
+        let _ = video.wait();
+        let _ = reap_child(&mut audio, "source_audio");
+        if let Some(reader) = video_diagnostics_reader {
+            finish_stderr_reader(reader, "source_video");
+        }
+        if let Some(reader) = audio_diagnostics_reader {
+            finish_stderr_reader(reader, "source_audio");
+        }
+        writeln!(stdout, "\x1b[0m\x1b[?25h")?;
+        stdout.flush()?;
+        return Ok(if quit {
+            PassOutcome::Quit
+        } else {
+            PassOutcome::Seek(seek_to.expect("seek_to is Some in this branch"))
+        });
     }
     let status = video.wait().map_err(|error| {
         eprintln!("termtv_event=source_playback operation=wait_video error={error}");
@@ -282,6 +358,14 @@ fn run_source_pass(
         });
     }
     if number == 0 {
+        if start_offset > 0.0 {
+            eprintln!(
+                "termtv_event=source_playback operation=seek_past_end input={} offset={:.1}",
+                input_path.display(),
+                start_offset
+            );
+            return Ok(PassOutcome::Ended);
+        }
         eprintln!(
             "termtv_event=source_playback operation=decode error=no_video_frames video={video_diagnostics} audio={audio_diagnostics}"
         );
@@ -295,7 +379,7 @@ fn run_source_pass(
             "termtv_event=source_playback operation=audio_status status={audio_status} diagnostics={audio_diagnostics}"
         );
     }
-    Ok(quit)
+    Ok(PassOutcome::Ended)
 }
 
 /// Capture a V4L2 webcam or OBS Virtual Camera and render it live.

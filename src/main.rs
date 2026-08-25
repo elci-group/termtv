@@ -75,7 +75,7 @@ fn print_command_help(command: Option<&str>) -> io::Result<()> {
                --loop           Restart from the first frame when playback ends\n\
                --backend ID     Render backend: ansi, kitty, sixel (default: ansi)\n\
                --volume N       Audio volume 0-100 (default: 100)\n\n\
-             Keys: p/space pause, q quit."
+             Keys: p/space pause, [/] seek -/+10s, q quit."
         ),
         Some("play-source") => println!(
             "termtv play-source <input> [options]\n\n\
@@ -89,7 +89,7 @@ fn print_command_help(command: Option<&str>) -> io::Result<()> {
                --loop        Restart the source from the beginning when it ends\n\
                --backend ID  Render backend: ansi, kitty, sixel (default: ansi)\n\
                --volume N    Audio volume 0-100 (default: 100)\n\n\
-             Keys: p/space pause, a toggle ambience, q quit."
+             Keys: p/space pause, a toggle ambience, [/] seek -/+10s, q quit."
         ),
         Some("playlist") => println!(
             "termtv playlist list <file.m3u>\n\
@@ -145,7 +145,7 @@ fn print_help() {
          Run `termtv <command> --help` for per-command details.\n\n\
          Hardware acceleration defaults to --hwaccel auto for convert, play-source, and camera.\n\
          Backends include vaapi, qsv, cuda, vdpau, drm, opencl, and vulkan.\n\
-         Playback keys: p/space pause, q quit (play, play-source); a toggle ambience (play-source).\n\
+         Playback keys: p/space pause, [/] seek -/+10s, q quit (play, play-source); a toggle ambience (play-source).\n\
          M3U playlists accept local files and legal/public streams supplied by the user."
     );
 }

@@ -2,7 +2,7 @@
 
 use std::{
     io::{self, Read},
-    process::Command,
+    process::{Command, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
 };
@@ -16,7 +16,14 @@ pub(crate) struct TerminalControls {
 impl TerminalControls {
     pub(crate) fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
-        let restore = match Command::new("stty").arg("-g").output() {
+        // `Command::output()` does not inherit stdin from the parent, but
+        // `stty` reports on its own stdin — it must be explicitly connected
+        // to our real stdin or the ioctl targets a closed stream and fails.
+        let restore = match Command::new("stty")
+            .arg("-g")
+            .stdin(Stdio::inherit())
+            .output()
+        {
             Ok(output) if output.status.success() => match String::from_utf8(output.stdout) {
                 Ok(state) => Some(state),
                 Err(_) => {
@@ -26,7 +33,14 @@ impl TerminalControls {
                     None
                 }
             },
-            Ok(_) => None,
+            Ok(output) => {
+                eprintln!(
+                    "termtv_event=controls operation=probe_tty status={:?} stderr={}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                None
+            }
             Err(error) => {
                 eprintln!("termtv_event=controls operation=probe_tty error={error}");
                 None
@@ -50,10 +64,11 @@ impl TerminalControls {
                 loop {
                     let mut byte = [0; 1];
                     match input.read(&mut byte) {
-                        Ok(1) if sender.send(byte[0]).is_err() => break,
-                        Ok(1) => {}
-                        Ok(0) => break,
-                        Ok(_) => break,
+                        // `min 0 time 1` makes a 0-byte read a normal poll
+                        // timeout, not EOF, so it must not stop the thread.
+                        Ok(0) => {}
+                        Ok(_) if sender.send(byte[0]).is_err() => break,
+                        Ok(_) => {}
                         Err(error) => {
                             eprintln!("termtv_event=controls operation=read_input error={error}");
                             break;

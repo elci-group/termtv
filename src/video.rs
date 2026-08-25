@@ -238,8 +238,9 @@ impl Video {
     /// Play this native TTV1 video in the terminal.
     ///
     /// `p`/space pauses (and suspends the audio child, if any), `q`/Ctrl-C
-    /// quits, and `loop_playback` restarts from the first frame once the
-    /// last frame has played (respawning audio so it stays roughly in sync).
+    /// quits, `[`/`]` seek back/forward, and `loop_playback` restarts from
+    /// the first frame once the last frame has played. Audio is respawned
+    /// (with `-ss`) on loop and seek so it stays roughly in sync.
     pub fn play(
         &self,
         color: bool,
@@ -247,19 +248,27 @@ impl Video {
         volume: u8,
         backend: &dyn crate::backend::Backend,
     ) -> Result<(), TermtvError> {
-        let spawn_audio = |path: &Path| -> io::Result<Child> {
+        let spawn_audio_at = |path: &Path, offset: f32| -> io::Result<Child> {
             let mut command = Command::new("ffplay");
             configure_child_lifetime(&mut command);
             command
                 .args(["-nodisp", "-autoexit", "-loglevel", "quiet"])
-                .args(["-volume", &volume.min(100).to_string()])
+                .args(["-volume", &volume.min(100).to_string()]);
+            if offset > 0.0 {
+                command.args(["-ss", &offset.to_string()]);
+            }
+            command
                 .arg(path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
         };
-        let mut audio = self.audio.as_deref().map(spawn_audio).transpose()?;
+        let mut audio = self
+            .audio
+            .as_deref()
+            .map(|path| spawn_audio_at(path, 0.0))
+            .transpose()?;
         let controls = TerminalControls::new();
         let mut current = Framebuffer::new(self.width, self.height);
         let mut previous = current.clone();
@@ -268,9 +277,13 @@ impl Video {
         let mut next = Instant::now();
         let mut paused = false;
         let mut quit = false;
+        let last_index = self.frames.len().saturating_sub(1);
+        let seek_frames = (crate::constants::SEEK_STEP_SECS * self.fps.max(1.0)).round() as usize;
         write!(stdout, "\x1b[2J\x1b[?25l")?;
         'playback: loop {
-            for (number, pixels) in self.frames.iter().enumerate() {
+            let mut frame_index = 0_usize;
+            while frame_index < self.frames.len() {
+                let mut seek_to: Option<usize> = None;
                 loop {
                     while let Ok(key) = controls.receiver.try_recv() {
                         match key {
@@ -279,12 +292,35 @@ impl Video {
                                 if let Some(child) = audio.as_ref() {
                                     signal_child(child.id(), if paused { "STOP" } else { "CONT" });
                                 }
+                                // Pausing stops the frame-render loop below,
+                                // which is the only other place this status
+                                // line is written, so show the new state now.
+                                write!(
+                                    stdout,
+                                    "\x1b[{};1H\x1b[0mTTV1 | {} | {:.1} FPS | frame {}/{} | {}",
+                                    self.height + 1,
+                                    backend.name(),
+                                    self.fps,
+                                    frame_index + 1,
+                                    self.frames.len(),
+                                    if paused { "PAUSED" } else { "PLAYING" }
+                                )?;
+                                stdout.flush()?;
+                            }
+                            b'[' => {
+                                seek_to = Some(frame_index.saturating_sub(seek_frames));
+                            }
+                            b']' => {
+                                seek_to = Some((frame_index + seek_frames).min(last_index));
                             }
                             b'q' | 3 => quit = true,
                             _ => {}
                         }
+                        if quit || seek_to.is_some() {
+                            break;
+                        }
                     }
-                    if quit || !paused {
+                    if quit || seek_to.is_some() || !paused {
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -292,11 +328,26 @@ impl Video {
                 if quit {
                     break 'playback;
                 }
+                if let Some(target) = seek_to {
+                    if let Some(mut child) = audio.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    let offset = target as f32 / self.fps.max(1.0);
+                    audio = self
+                        .audio
+                        .as_deref()
+                        .map(|path| spawn_audio_at(path, offset))
+                        .transpose()?;
+                    frame_index = target;
+                    next = Instant::now();
+                    continue;
+                }
                 let now = Instant::now();
                 if now < next {
                     std::thread::sleep(next - now);
                 }
-                current.cells.copy_from_slice(pixels);
+                current.cells.copy_from_slice(&self.frames[frame_index]);
                 let diff = backend.render(&current, &previous, color);
                 write!(
                     stdout,
@@ -305,13 +356,14 @@ impl Video {
                     self.height + 1,
                     backend.name(),
                     self.fps,
-                    number + 1,
+                    frame_index + 1,
                     self.frames.len(),
                     if paused { "PAUSED" } else { "PLAYING" }
                 )?;
                 stdout.flush()?;
                 std::mem::swap(&mut current, &mut previous);
                 next += frame_time;
+                frame_index += 1;
             }
             if !loop_playback {
                 break;
@@ -320,7 +372,11 @@ impl Video {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            audio = self.audio.as_deref().map(spawn_audio).transpose()?;
+            audio = self
+                .audio
+                .as_deref()
+                .map(|path| spawn_audio_at(path, 0.0))
+                .transpose()?;
             next = Instant::now();
         }
         writeln!(stdout, "\x1b[0m\x1b[?25h")?;
