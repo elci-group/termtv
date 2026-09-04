@@ -1,6 +1,6 @@
 [package]
 name = "termtv"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A tiny fixed-timestep terminal renderer with block graphics and dirty-cell diffing"
 license = "MIT"

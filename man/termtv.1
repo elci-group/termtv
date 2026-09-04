@@ -67,6 +67,38 @@ Camera capture height.
 .TP
 .BR \-\-behavior " " \fIlive|photo\fR
 Camera behavior.
+.TP
+.BR \-\-backend " " \fIID\fR
+Render backend: \fBansi\fR, \fBkitty\fR, or \fBsixel\fR (default: \fBansi\fR).
+Used by \fBplay\fR, \fBplay-source\fR, \fBcamera on\fR, and \fBplaylist play\fR.
+.TP
+.BR \-\-loop
+Restart playback from the first frame when the source ends
+(\fBplay\fR, \fBplay-source\fR). Not propagated to individual entries by
+\fBplaylist play\fR.
+.TP
+.BR \-\-volume " " \fIN\fR
+Audio volume 0\(en100 (default: 100). Used by \fBplay\fR and \fBplay-source\fR.
+.TP
+.BR \-\-frames " " \fIN\fR
+Render at most \fIN\fR frames and exit (demo mode; default: unlimited).
+.TP
+.BR \-\-obs
+Select the OBS Virtual Camera for \fBcamera on\fR; must be combined with
+.BR \-\-device " /dev/videoN" .
+.SH KEYBOARD CONTROLS
+.TP
+.B p\fR, \fBspace
+Pause/resume playback.
+.TP
+.BR [\fR, \fB]
+Seek \(mi10s / +10s.
+.TP
+.B a
+Toggle ambience mode (\fBplay-source\fR only).
+.TP
+.B q
+Quit playback.
 .SH FILES
 .TP
 .I ./.termtv.toml
@@ -74,5 +106,42 @@ Local configuration file.
 .TP
 .I ~/.config/termtv/config.toml
 User configuration file.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An error occurred: unknown command, missing or invalid argument, unreadable
+input, or playback/convert failure. The specific failure is reported on
+stderr as a \fBtermtv_event=\fR diagnostic.
+.SH EXAMPLES
+.nf
+# Convert a video to the native format, then play it
+termtv convert clip.mp4 clip.ttv
+termtv play clip.ttv
+
+# Stream a source directly, looping with the kitty backend
+termtv play-source clip.mp4 \-\-loop \-\-backend kitty
+
+# Stream with quiet audio at half volume
+termtv play-source clip.mp4 \-\-volume 50
+
+# Convert for a small terminal with a fixed frame rate
+termtv convert clip.mp4 clip.ttv \-\-width 80 \-\-height 24 \-\-fps 30
+
+# List a playlist, then play it
+termtv playlist list mix.m3u
+termtv playlist play mix.m3u
+
+# Stream the OBS Virtual Camera
+termtv camera on \-\-obs \-\-device /dev/video2
+
+# Check which hardware accelerators are usable
+termtv accel\-info
+
+# Render the built-in demo for 100 frames
+termtv \-\-frames 100
+.fi
 .SH SEE ALSO
 .BR ffmpeg (1)
